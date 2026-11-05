@@ -886,9 +886,9 @@ Regras (spec seção 6 degrau 2; rule-set próprio, informado por `hallmark/slop
 
 | id | Detecta |
 |---|---|
-| `SLOP-PURPLE-GRADIENT` | `linear-gradient` com stop roxo/violeta/índigo |
+| `SLOP-PURPLE-GRADIENT` | gradiente (`linear`/`radial`/`conic`) com stop roxo/violeta/índigo |
 | `SLOP-EYEBROW-CAPS` | bloco com `text-transform: uppercase` + `letter-spacing` largo |
-| `SLOP-SPACING-RHYTHM` | `margin`/`padding`/`gap` em px múltiplo de 4 (ignora 0 e `border`) |
+| `SLOP-SPACING-RHYTHM` | `margin`/`padding`/`gap` em px que **não** é múltiplo de 4 (ignora 0 e `border`) |
 | `SLOP-OFF-TOKEN-COLOR` | cor hexadecimal que não está nos tokens do tema |
 
 - [ ] **Step 1: Escrever os testes que falham**
@@ -1014,7 +1014,7 @@ export function lintFiles(entries) {
 - [ ] **Step 4: Rodar para confirmar passagem**
 
 Run: `node --test test/sloplint.test.js`
-Expected: PASS (6 testes)
+Expected: FAIL — o trecho acima é o ponto de partida, não a versão final: ele viola dois testes do próprio Step 1 (a isenção de token ancorada em linha não dispara em `:root { --ink: #ff0055; }` numa linha só, e a regra de espaçamento exige `;`, deixando a última declaração de cada bloco sem checar). Implemente o scanner por bloco/declaração com máscara de comentários e strings (índices preservando `\n`, para o `line` continuar certo) e só então espere PASS nos 6 testes do brief mais os que você acrescentar. Referências de comportamento, não de cópia: `lib/sloplint.js` commitado em `e8ae1db`.
 
 - [ ] **Step 5: Commit**
 
