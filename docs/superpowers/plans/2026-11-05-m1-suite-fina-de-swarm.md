@@ -1347,7 +1347,7 @@ Registrar, no mínimo: `hallmark` (MIT) como referência das regras de ritmo/eye
 // test/prompt.test.js
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { renderPrompt, writePrompt } from '../lib/prompt.js';
@@ -1357,7 +1357,9 @@ import { scopeDir } from '../lib/paths.js';
 const SEED = join(import.meta.dirname, '..', 'seed');
 
 const base = {
-  task: { id: 'T-01', title: 'Cabecalho acessivel', dirs: ['components/header'].map(scopeDir), dependsOn: [], verify: null },
+  // O lote vai `components/header/**` e nao `components/header`: `scopeDir` corta caminho literal
+  // no pai, e o teste de abaixo afirma o diretorio inteiro dentro do prompt (regra da Task 2).
+  task: { id: 'T-01', title: 'Cabecalho acessivel', dirs: ['components/header/**'].map(scopeDir), dependsOn: [], verify: null },
   waveNumber: 1,
   run: { workDir: 'C:/x/runs/r1/worktrees/T-01', branch: 'swarm/r1/T-01', reportPath: 'C:/x/runs/r1/tasks/T-01/attempt-1/report.md' },
   floor: loadFloor(SEED),
@@ -1378,6 +1380,26 @@ test('repoConventions pega AGENTS.md e CLAUDE.md e corta em 6000 chars', () => {
   const out = repoConventions(d);
   assert.ok(out.length < 7000);
   assert.ok(out.includes('regras'));
+  // Os 9000 x do arquivo viraram no maximo 6000 no prompt, e sobreviveu a frente (o comeco da
+  // regra, nao o fim do arquivo): contar os x e mais honesto que afirmar um comprimento exato,
+  // que mudaria se o cabecalho `### AGENTS.md` mudasse de tamanho.
+  const xs = (out.match(/x/g) || []).length;
+  assert.ok(xs > 5000 && xs <= 6000, `x cortado para o teto por arquivo, veio ${xs}`);
+});
+
+// O nome do teste acima promete AGENTS.md E CLAUDE.md, entao os tres arquivos convencionados
+// precisam ter cobertura: o worker so ve o que repoConventions juntou, e a ordem dos cabecalhos
+// e o que o prompt da Task 8 mostra como "Convenções do repositorio alvo".
+test('repoConventions junta os tres arquivos de convencao, cada um com seu teto', () => {
+  const d = mkdtempSync(join(tmpdir(), 'swarm-conv-'));
+  writeFileSync(join(d, 'AGENTS.md'), 'regra-agents\n' + 'a'.repeat(9000));
+  writeFileSync(join(d, 'CLAUDE.md'), 'regra-claude');
+  writeFileSync(join(d, 'TECHNICAL_GUIDELINES.md'), 'regra-tech');
+  const out = repoConventions(d);
+  assert.ok(out.includes('regra-agents') && out.includes('regra-claude') && out.includes('regra-tech'));
+  assert.deepEqual([...out.matchAll(/^### (\S+)$/gm)].map((m) => m[1]),
+    ['AGENTS.md', 'CLAUDE.md', 'TECHNICAL_GUIDELINES.md']);
+  assert.ok(out.length < 3 * 6100, 'o teto e por arquivo, e a soma tem que caber no prompt');
 });
 
 test('repoConventions sem arquivos volta string vazia', () => {
