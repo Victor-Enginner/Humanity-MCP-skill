@@ -815,32 +815,46 @@ Expected: FAIL — `Cannot find module '../lib/report.js'`
 - [ ] **Step 3: Implementar**
 
 ```js
-// lib/report.js
+// lib/report.js — o que o worker diz (parseReport) contra o que ele fez (scopeCheck).
 import { ownsFile } from './paths.js';
 
 const list = (v) => v.split(',').map((s) => s.trim()).filter(Boolean);
 
+// Fim de secao = proximo "^## " ou fim absoluto da entrada. `$` sozinho nao serve: com a flag m
+// ele casa no fim de QUALQUER linha, e o trecho preguiçoso pararia na primeira linha.
+const SUMMARY = /^## Summary\s*\n([\s\S]*?)(?=^## |(?![\s\S]))/m;
+const BLOCKED = /^## Blocked\s*\n([\s\S]*?)(?=^## |(?![\s\S]))/m;
+const TOUCHED = /^-\s+touched:\s*(.*)$/m;
+const TOKENS = /^-\s+tokens:\s*(\d+)/m;
+
 export function parseReport(md) {
-  const touched = /^-\s+touched:\s*(.*)$/m.exec(md);
-  const tokens = /^-\s+tokens:\s*(\d+)/m.exec(md);
-  const summary = /^## Summary\s*\n([\s\S]*?)(?=\n##\s|$)/m.exec(md);
-  const blocked = /^## Blocked\s*\n([\s\S]*?)(?=\n##\s|$)/m.exec(md);
+  const touched = TOUCHED.exec(md);
+  const tokens = TOKENS.exec(md);
+  const summary = SUMMARY.exec(md);
+  const blocked = BLOCKED.exec(md);
+  const blockedText = blocked ? blocked[1].trim() : '';
   return {
     touched: touched ? list(touched[1]) : [],
     tokens: tokens ? Number(tokens[1]) : null,
     summary: summary ? summary[1].trim() : '',
-    blocked: blocked ? blocked[1].trim() : null,
+    // Um "## Blocked" sem corpo nao e um bloqueio: '' seria lido como bloco existente e
+    // viraria tarefa fantasma na onda seguinte.
+    blocked: blockedText || null,
   };
 }
+
+// Status vem do git via lib/isolate.js: A criado, M modificado, D apagado, R renomeado (a
+// origem e o destino chegam como dois itens). O reason e a mensagem do finding da Task 7.
+const reasonFor = (status) =>
+  status === 'A' ? 'criado fora do lote declarado'
+    : status === 'D' ? 'apagado fora do lote declarado'
+    : status === 'R' ? 'renomeado com um lado fora do lote declarado'
+    : 'modificado fora do lote declarado';
 
 export function scopeCheck({ dirs, files }) {
   const violations = files
     .filter((f) => !ownsFile(dirs, f.file))
-    .map((f) => ({
-      file: f.file,
-      status: f.status,
-      reason: f.status === 'A' ? 'criado fora do lote declarado' : 'modificado fora do lote declarado',
-    }));
+    .map((f) => ({ file: f.file, status: f.status, reason: reasonFor(f.status) }));
   return { ok: violations.length === 0, violations };
 }
 ```
