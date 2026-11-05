@@ -208,7 +208,7 @@ const MD = `# plano
 - verify: node build.mjs
 
 ## T-02 cabecalho
-- paths: components/header.*, styles/header.css
+- paths: components/header/**, styles/header.css
 - depends_on: T-01
 - verify: -
 
@@ -1408,12 +1408,12 @@ function setup() {
 
 const PLAN = `# plano
 ## T-01 tokens
-- paths: styles
+- paths: styles/**
 - depends_on: -
 - verify: -
 
 ## T-02 cabecalho
-- paths: components
+- paths: components/**
 - depends_on: T-01
 - verify: -
 `;
@@ -1814,6 +1814,9 @@ Toda escrita de estado vai pelo `run.js`. Voce e o unico autor do `status.tsv` (
 1. `node run.js init --repo <repo> --workspace <dir>` -> `runDir` no stdout.
 2. Escreva `plan.md`. Cada tarefa declara o **lote** (diretorios que ela possui),
    `depends_on` e `verify`. Lote disputado na mesma onda faz o plano ser recusado.
+   Sintaxe do lote: um diretorio **sempre** com `/**` no fim (`backend/adapters/**`).
+   Sem o wildcard, `scopeDir` corta o caminho literal no pai e a tarefa passa a
+   possuir um nivel acima do que voce declarou; um nome solto (`config`) vira a raiz.
 3. `node run.js plan --run <runDir> --file plan.md` -> valida e grava as ondas.
 4. Para cada onda, **no maximo 3 tarefas** em paralelo:
    `node run.js start --run <runDir> --task T-xx` e entregue o `prompt` impresso
@@ -1981,17 +1984,17 @@ const cli = (a, cwd = import.meta.dirname) =>
 
 const PLAN = `# plano
 ## T-01 tokens
-- paths: styles
+- paths: styles/**
 - depends_on: -
 - verify: node build.mjs
 
 ## T-02 cabecalho
-- paths: components/header
+- paths: components/header/**
 - depends_on: T-01
 - verify: node build.mjs
 
 ## T-03 rodape
-- paths: components/footer
+- paths: components/footer/**
 - depends_on: T-01
 - verify: node build.mjs
 `;
@@ -2120,7 +2123,7 @@ function setup() {
   const workspace = mkdtempSync(join(tmpdir(), 'swarm-fault-ws-'));
   const meta = JSON.parse(cli(['init', '--repo', repoDir, '--workspace', workspace]));
   const plan = join(workspace, 'plan.md');
-  writeFileSync(plan, '## T-01 a\n- paths: styles\n- depends_on: -\n- verify: -\n\n## T-02 b\n- paths: components\n- depends_on: -\n- verify: -\n');
+  writeFileSync(plan, '## T-01 a\n- paths: styles/**\n- depends_on: -\n- verify: -\n\n## T-02 b\n- paths: components/**\n- depends_on: -\n- verify: -\n');
   cli(['plan', '--run', meta.runDir, '--file', plan]);
   return { ...meta, repoDir, workspace };
 }
@@ -2226,20 +2229,22 @@ Se sujo: **pare e pergunte**. Worktree ramifica do HEAD; árvore suja significa 
 ```markdown
 # plano libra — secao de precificacao
 ## T-01 paginas de marketing
-- paths: apps/web/app/(frontend)/(marketing)
+- paths: apps/web/app/(frontend)/(marketing)/**
 - depends_on: T-02
 - verify: -
 
 ## T-02 componentes de marketing
-- paths: apps/web/components/marketing
+- paths: apps/web/components/marketing/**
 - depends_on: -
 - verify: -
 
 ## T-03 textos pt/en
-- paths: apps/web/messages
+- paths: apps/web/messages/**
 - depends_on: T-02
 - verify: -
 ```
+
+**Sintaxe de lote (regra, não opção):** um lote de diretório **sempre** termina em `/**`. `scopeDir` corta um caminho literal sem wildcard no diretório pai — `apps/web/messages` viraria posse de `apps/web` inteiro, e o swarm perderia o isolamento que é a tese do M1. Um arquivo literal declarado sozinho (`styles/tokens.css`) herda o diretório dele de propósito (é o que a spec afirma no Task 1).
 
 T-02 é a onda 1 (componentes); T-01 e T-03 são a onda 2 (página e copy consomem os componentes). Os três lotes são disjuntos por diretório, e as rotas com parênteses testam o path no Windows de verdade.
 
@@ -2332,20 +2337,22 @@ Expected: `git status --porcelain` vazio. Se o `index (1).html` (494KB) e o `.zi
 ```markdown
 # plano verde fluxo — health das fontes
 ## T-01 adapters
-- paths: backend/adapters
+- paths: backend/adapters/**
 - depends_on: -
 - verify: python -m unittest discover -s backend/tests -v
 
 ## T-02 teste de contrato
-- paths: backend/tests
+- paths: backend/tests/**
 - depends_on: -
 - verify: python -m unittest discover -s backend/tests -v
 
 ## T-03 config das fontes
-- paths: config
+- paths: config/**
 - depends_on: -
 - verify: -
 ```
+
+Mesma regra da Task 13: lote de diretório termina em `/**`. Sem isso, `config` viraria `.` — a raiz do repositório inteiro, que `validateWaves` só aceita como lote solo.
 
 Onde está o dente: T-01 e T-02 **não podem** ser na mesma onda se tocarem o mesmo contrato — é o teste honesto de que a declaração de lote obriga o planejador a pensar em posse. E o `verify` roda de verdade, sem `bun install`.
 
