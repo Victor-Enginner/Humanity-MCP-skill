@@ -43,8 +43,9 @@ test('runVerify corta saida longa para caber no ledger', async () => {
 });
 
 // O teste que segura a regra 1: depois de um timeout, NINGUEM pode escrever no diretorio.
-// Sem o taskkill da arvore, este teste passa por acidente quando o filho e rapido e falha
-// quando a maquina esta carregada — por isso o filho dorme 1,5 s e o teste espera 2,5 s.
+// Medido nesta maquina: no lugar do taskkill da arvore, com `child.kill()` simples, o node filho
+// sobrevive ao cmd.exe e o arquivo aparece — o teste falha, sempre. As margens (filho dorme 1,5 s,
+// timeout de 300 ms, teste espera 2,5 s) existem para nenhuma flutuacao de maquina decidir isso.
 // O filho e ESM de proposito (`require` nao existe em .mjs no Node 24 e o teste passaria vazio).
 test('runVerify timeout mata a arvore de processos, nao so o shell', async () => {
   const d = tmpDir();
