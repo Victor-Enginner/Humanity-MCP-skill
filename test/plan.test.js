@@ -34,6 +34,15 @@ test('parsePlan: sem tarefa lanca PlanError', () => {
   assert.throws(() => parsePlan('# nada aqui'), PlanError);
 });
 
+// A emenda do body (ruling da Task 8): o worker precisa de especificacao, e ela mora no plano que o
+// humano revisa — nao num arquivo paralelo. Sem prosa o corpo e '' (nem null, nem o titulo).
+test('parsePlan guarda o corpo da tarefa e nao inventa um', () => {
+  assert.equal(parsePlan(MD)[0].body, '');
+  const t = parsePlan('## T-01 x\n- paths: styles/**\n- depends_on: -\n- verify: -\n\nFaca o cabecalho usar --accent.\nNao toque em tokens.css.\n\n## T-02 y\n- paths: components/**\n');
+  assert.equal(t[0].body, 'Faca o cabecalho usar --accent.\nNao toque em tokens.css.');
+  assert.equal(t[1].body, '');
+});
+
 test('parsePlan: dependencia inexistente lanca PlanError', () => {
   assert.throws(() => parsePlan('## T-01 x\n- paths: a\n- depends_on: T-99\n'), PlanError);
 });

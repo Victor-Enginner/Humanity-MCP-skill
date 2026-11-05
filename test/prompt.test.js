@@ -104,3 +104,44 @@ test('renderPrompt e deterministico: mesmas entradas, mesmos bytes', () => {
   const aqui = import.meta.dirname.replaceAll('\\', '/');
   assert.ok(!a.includes(aqui), 'caminho do repositorio swarm vazou no prompt');
 });
+
+// --- Fix round da emenda da Task 8 (2026-11-05): o corpo da tarefa entra no prompt (item 1,
+// consumindo o `Task.body` da emenda da Task 2) e o paragrafo de dependencia passa a dizer a
+// verdade do protocolo novo da Task 9 (item 2: worktree de onda > 1 sai do head de integracao).
+
+test('o corpo da tarefa entra no prompt logo abaixo do titulo', () => {
+  const corpo = 'Faca o cabecalho usar --accent.\nNao toque em tokens.css.';
+  const p = renderPrompt({ ...base, task: { ...base.task, body: corpo } });
+  const iTitulo = p.indexOf(base.task.title);
+  const iCorpo = p.indexOf(corpo);
+  const iDep = p.indexOf('Depende de:');
+  assert.ok(iTitulo >= 0, 'titulo presente');
+  assert.ok(iCorpo > iTitulo, 'corpo precisa aparecer abaixo do titulo');
+  assert.ok(iCorpo < iDep, 'o corpo e a especificacao da tarefa: vem antes do paragrafo de dependencia');
+});
+
+test('corpo vazio ou ausente nao inventa secao nem muda um byte do prompt', () => {
+  const semCampo = renderPrompt(base); // fixture antigo, sem `body` nenhum
+  const comVazio = renderPrompt({ ...base, task: { ...base.task, body: '' } });
+  const comEspacos = renderPrompt({ ...base, task: { ...base.task, body: '  \n  ' } });
+  assert.equal(comVazio, semCampo, 'body vazio nao pode mudar nada');
+  assert.equal(comEspacos, semCampo, 'body so whitespace tambem nao');
+  assert.match(comVazio, /Cabecalho acessivel\n\nDepende de:/, 'sem corpo: o titulo segue direto a linha Depende de');
+  assert.ok(!comVazio.includes('[corpo cortado]'));
+});
+
+test('corpo acima de 6000 chars e cortado com a marca literal no comeco', () => {
+  const corpo = 'x'.repeat(6000) + 'ECAUDA-CORTADA';
+  const p = renderPrompt({ ...base, task: { ...base.task, body: corpo } });
+  assert.match(p, /\[corpo cortado\]/);
+  assert.ok(p.includes('x'.repeat(6000)), 'o teto mantem o comeco — num plano, o que vem primeiro importa');
+  assert.ok(!p.includes('ECAUDA-CORTADA'), 'o fim acima do teto nao entra no prompt');
+});
+
+test('o prompt afirma a verdade nova da dependencia e a mentira antiga saiu', () => {
+  const p = renderPrompt(base);
+  // Fragmento fixo do paragrafo novo (emenda item 2): a dependencia ja esta no worktree.
+  assert.match(p, /ja estao no seu worktree/i);
+  // A claim antiga do `cmdStart` rascunhado nao pode sobreviver em lugar nenhum.
+  assert.doesNotMatch(p, /NAO esta no seu worktree/);
+});
