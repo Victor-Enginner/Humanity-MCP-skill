@@ -1087,11 +1087,13 @@ test('runVerify corta saida longa para caber no ledger', async () => {
 });
 
 // O teste que segura a regra 1: depois de um timeout, NINGUEM pode escrever no diretorio.
-// Sem o taskkill da arvore, este teste passa por acidente quando o filho e rápido e falha
-// quando a maquina esta carregada — por isso o filho dorme 1,5 s e o teste espera 2,5 s.
+// Medido nesta maquina: no lugar do taskkill da arvore, com `child.kill()` simples, o node filho
+// sobrevive ao cmd.exe e o arquivo aparece — o teste falha, sempre. As margens (filho dorme 1,5 s,
+// timeout de 300 ms, teste espera 2,5 s) existem para nenhuma flutuacao de maquina decidir isso.
+// O filho e ESM de proposito (`require` nao existe em .mjs no Node 24 e o teste passaria vazio).
 test('runVerify timeout mata a arvore de processos, nao so o shell', async () => {
   const d = mkdtempSync(join(tmpdir(), 'swarm-gate-'));
-  writeFileSync(join(d, 'lento.mjs'), "setTimeout(() => require('node:fs').writeFileSync('escrito.txt', 'zumbi'), 1500);\n");
+  writeFileSync(join(d, 'lento.mjs'), "import { writeFileSync } from 'node:fs';\nsetTimeout(() => writeFileSync('escrito.txt', 'zumbi'), 1500);\n");
   const r = await runVerify('node lento.mjs', d, 300);
   assert.equal(r.rc, 124);
   assert.equal(r.timedOut, true);
@@ -1112,6 +1114,15 @@ test('gateWave sem verify so checa sloplint', async () => {
   assert.equal(g.build, null);
   assert.equal(g.findings[0].id, 'SLOP-OFF-TOKEN-COLOR');
 });
+
+// A regra 2 tem que ter guarda executável: 124 vindo do comando mesmo nao e timeout.
+test('runVerify de comando que sai 124 por conta propria nao e timeout', async () => {
+  const d = mkdtempSync(join(tmpdir(), 'swarm-gate-'));
+  writeFileSync(join(d, 'convite.mjs'), "console.log('eu escolhi sair 124');\nprocess.exit(124);\n");
+  const r = await runVerify('node convite.mjs', d, 5_000);
+  assert.equal(r.rc, 124);
+  assert.equal(r.timedOut, false);
+});
 ```
 
 - [ ] **Step 2: Rodar para confirmar falha**
@@ -1123,44 +1134,145 @@ Expected: FAIL — `Cannot find module '../lib/gate.js'`
 
 ```js
 // lib/gate.js
-import { execSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import { lintFiles } from './sloplint.js';
 
 const VERIFY_TIMEOUT_MS = 300_000;
 const OUTPUT_CAP = 4000;
+const JANELA_MEMORIA = 4 * OUTPUT_CAP;
+const GRACA_MS = 2_000;
 
-export function runVerify(cmd, cwd) {
+const tail = (s) => String(s ?? '').slice(-OUTPUT_CAP);
+
+// Decoder por stream: um caractere UTF-8 partido ao meio entre dois chunks não pode virar U+FFFD
+// no registro do ledger. Acumula com teto: sem `maxBuffer`, é isto que impede um build de 18 MB de
+// virar uma string de 18 MB — e um build barulhento que termina em 0 continua sendo 0.
+function coleta() {
+  const dec = new StringDecoder('utf8');
+  let acum = '';
+  return {
+    add(chunk) {
+      acum += dec.write(chunk);
+      if (acum.length > 2 * JANELA_MEMORIA) acum = acum.slice(-JANELA_MEMORIA);
+    },
+    fim() {
+      acum += dec.end();
+      return acum.slice(-OUTPUT_CAP);
+    },
+  };
+}
+
+// Melhor esforço, e nunca lança: se o kill falhar, a gate ainda responde rc 124.
+function mataArvore(child) {
   try {
-    const out = execSync(cmd, { cwd, encoding: 'utf8', timeout: VERIFY_TIMEOUT_MS,
-      stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 16 * 1024 * 1024 });
-    return { rc: 0, output: String(out).slice(-OUTPUT_CAP) };
-  } catch (e) {
-    const text = `${e.stdout ?? ''}${e.stderr ?? ''}${e.message ?? ''}`;
-    return { rc: typeof e.status === 'number' ? e.status : 1, output: text.slice(-OUTPUT_CAP) };
+    if (child.pid === undefined) return;
+    if (process.platform !== 'win32') {
+      child.kill('SIGKILL');
+      return;
+    }
+    // `spawnSync` SEM `shell`: passando por shell, o Git Bash lê `/F` como caminho e o kill não
+    // roda. E se o `taskkill` não estiver ao alcance (PATH quebrado), ainda vale matar o shell.
+    const r = spawnSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore' });
+    if (r.error) child.kill('SIGKILL');
+  } catch {
+    // nada a fazer: o rc 124 é a resposta, com ou sem kill confirmado.
   }
 }
 
+export function runVerify(cmd, cwd, timeoutMs = VERIFY_TIMEOUT_MS) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      // stdin 'ignore': gate automática não pode travar esperando resposta de um comando que
+      // pergunta alguma coisa. `windowsHide`: sem isto o cmd.exe abre janela no desktop de quem
+      // roda o swarm.
+      child = spawn(cmd, { cwd, shell: true, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    } catch (e) {
+      resolve({ rc: 1, output: tail((e && e.message) || e), timedOut: false });
+      return;
+    }
+    const stdout = coleta();
+    const stderr = coleta();
+    let temporizador = null, graca = null, respondido = false, saidaDoFilho = null, timeout = false;
+
+    // `timedOut` é campo, não o número: um comando que sai 124 por conta própria não é timeout, e
+    // o estado `timeout` do ledger mentiria. O rc continua 124 porque é a convenção do ledger.
+    const responde = (rc, motivo) => {
+      if (respondido) return;
+      respondido = true;
+      clearTimeout(temporizador);
+      clearTimeout(graca);
+      const texto = [stdout.fim(), stderr.fim()].filter(Boolean).join('\n');
+      resolve({ rc, output: tail(texto || motivo), timedOut: timeout });
+    };
+    const rcDoFilho = () => (saidaDoFilho === null ? 1 : (saidaDoFilho.code ?? 1));
+    const motivoTimeout = () => `o build nao terminou em ${timeoutMs}ms e a arvore foi morta`;
+    const armaGraca = (rc, motivo) => {
+      if (graca === null) graca = setTimeout(() => responde(rc, motivo), GRACA_MS);
+    };
+
+    child.stdout.on('data', (b) => stdout.add(b));
+    child.stderr.on('data', (b) => stderr.add(b));
+    // O rc vem do filho, não do pipe: um EPIPE de um build que fecha o próprio stdout não pode
+    // derrubar o processo do swarm nem deixar a promessa pendurada sem resposta.
+    child.stdout.on('error', () => {});
+    child.stderr.on('error', () => {});
+
+    // ENOENT, cwd inexistente: o comando não rodou. rc 1 com o motivo, nunca uma exceção da gate.
+    child.on('error', (e) => responde(1, (e && e.message) || String(e)));
+
+    child.on('exit', (code, signal) => {
+      saidaDoFilho = { code, signal };
+      // Depois do kill resolve-se no `exit`, não no `close`: um neto que ficou com o stdio herdado
+      // seguraria o `close` e a gate esperaria por um processo que ela já matou.
+      if (timeout) responde(124, motivoTimeout());
+      else armaGraca(rcDoFilho(), '');
+    });
+
+    child.on('close', () => {
+      if (timeout) responde(124, motivoTimeout());
+      else responde(rcDoFilho(), '');
+    });
+
+    temporizador = setTimeout(() => {
+      if (saidaDoFilho !== null) {
+        // O build terminou sozinho; o que ainda não fecharam foram os pipes. Matar a árvore aqui
+        // reportaria timeout de um build que rodou até o fim.
+        armaGraca(rcDoFilho(), '');
+        return;
+      }
+      timeout = true;
+      mataArvore(child);
+      armaGraca(124, motivoTimeout());
+    }, timeoutMs);
+  });
+}
+
 export function gateTask({ scope, cssEntries }) {
-  const findings = [];
-  for (const v of scope.violations) {
-    findings.push({ id: 'SCOPE-OUTSIDE-LOT', file: v.file, line: null, message: v.reason });
-  }
+  const findings = scope.violations.map((v) => ({
+    id: 'SCOPE-OUTSIDE-LOT', file: v.file, line: null, message: v.reason,
+  }));
   findings.push(...lintFiles(cssEntries));
   return { level: 'task', ok: findings.length === 0, findings };
 }
 
-export function gateWave({ dir, verify, cssEntries }) {
+// `async` porque espera o build que ela própria mata no timeout — e é a única função da suíte que
+// precisa esperar: `gateTask` continua síncrona.
+export async function gateWave({ dir, verify, cssEntries }) {
   const findings = lintFiles(cssEntries);
-  const build = verify ? runVerify(verify, dir) : null;
-  const buildOk = build ? build.rc === 0 : true;
-  return { level: 'wave', ok: buildOk && findings.length === 0, findings, build };
+  // `build: null` é a terceira coisa possível, e precisa continuar visível: "a onda não declarou
+  // build" não é "o build rodou e passou". Um verify em branco é tratado como não declarado.
+  const cmd = typeof verify === 'string' ? verify.trim() : '';
+  const build = cmd ? await runVerify(cmd, dir) : null;
+  return { level: 'wave', ok: (build === null || build.rc === 0) && findings.length === 0, findings, build };
 }
 ```
 
 - [ ] **Step 4: Rodar para confirmar passagem**
 
 Run: `node --test test/gate.test.js`
-Expected: PASS (7 testes)
+Expected: PASS (os 8 acima; o arquivo commitado termina com 17 testes — os extras são os que a revisão pediu)
 
 - [ ] **Step 5: Commit**
 
