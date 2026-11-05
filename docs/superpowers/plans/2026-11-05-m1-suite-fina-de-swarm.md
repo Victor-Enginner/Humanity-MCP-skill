@@ -19,7 +19,7 @@
 - Nada escreve no pendrive; nenhum caminho cai em home da máquina hospedeira. Todo estado sob `runDir`, passado por parâmetro (spec D6).
 - O repositório alvo é sempre **parâmetro** (`--repo`), nunca hardcoded.
 - Windows 11: sem `/tmp`, sem `date -Is`, sem tmux, sem symlink, sem shell pipes quando `execFileSync` resolver; separadores tratados por `normalize()`.
-- Testes com `node --test`; um commit por tarefa, mensagem em PT-BR no estilo dos commits existentes (`swarm: <o que a tarefa entrega>`).
+- Testes com `node --test "test/**/*.test.js"` (**não** `node --test test/`: no Node 24 o argumento de diretório é tratado como um único arquivo de teste e falha). Um commit por tarefa, mensagem em PT-BR no estilo dos commits existentes (`swarm: <o que a tarefa entrega>`).
 - Textos de UI e docs em PT-BR; comentários de código só quando o *porquê* não for óbvio.
 - Identidade git nos testes: sempre `-c user.email=swarm@test -c user.name=swarm`, nunca depender de config global.
 
@@ -77,7 +77,7 @@ Cada módulo tem uma responsabilidade e é testável isoladamente. `run.js` é a
   "private": true,
   "type": "module",
   "engines": { "node": ">=20" },
-  "scripts": { "test": "node --test test/" }
+  "scripts": { "test": "node --test \"test/**/*.test.js\"" }
 }
 ```
 
