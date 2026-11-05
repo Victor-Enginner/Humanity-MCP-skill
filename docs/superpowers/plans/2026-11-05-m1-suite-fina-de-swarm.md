@@ -1514,6 +1514,7 @@ test('status tabula e abort derruba worktrees', () => {
   cli(['abort', '--run', meta.runDir]);
   assert.equal(existsSync(a.workDir), false);
   assert.match(readFileSync(join(meta.runDir, 'status.tsv'), 'utf8'), /T-01\tdiscarded/);
+  assert.equal(git(['branch', '--list', 'swarm/*'], repoDir).trim(), '');
 });
 ```
 
@@ -1692,11 +1693,16 @@ function cmdAbort(o) {
   for (const t of tasksOf(o.run)) {
     const dir = worktreePath(o.run, t.id);
     if (existsSync(dir)) removeWorktree({ repoDir: run.repoDir, dir });
+    // `git worktree remove` NAO apaga a ref: sem isto, o `git branch` do humano acumula
+    // uma linha swarm/<runId>/... por tarefa, por run. A refstore e compartilhada por
+    // construcao do git, e limpar ela e obrigacao deste CLI, nao do worktree.
+    gitIn(run.repoDir, ['branch', '-D', branchName(run.runId, t.id)]);
     append(o.run, { task: t.id, state: 'discarded', rc: null, start: latest(o.run, t.id)?.start ?? null,
       end: stamp(), branch: branchName(run.runId, t.id), log: null, tokens: null, pid: null });
   }
   const integ = integrationPath(o.run);
   if (existsSync(integ)) removeWorktree({ repoDir: run.repoDir, dir: integ });
+  gitIn(run.repoDir, ['branch', '-D', `swarm/${run.runId}/integration`]);
   out({ aborted: true });
   return 0;
 }
@@ -1716,7 +1722,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 }
 ```
 
-**Nota de implementação:** `cmdIntegrate` acima está rascunhado de propósito em duas passadas — a versão final roda **uma** pilha de branches por onda, chamando `mergeInOrder` com `pile` e gravando `gates/wave-<n>.json` + linhas `merged`/`failed` no ledger, e a `gateWave` com `verify` declarado no plano. Implemente a versão final aqui, substituindo o rascunho, e teste no Step 1 de `test/e2e.test.js` (Task 11). Não deixe o rascunho no arquivo: o teste de integração abaixo é o que o remove.
+**Nota de implementação:** `cmdIntegrate` acima está rascunhado de propósito em duas passadas — a versão final roda **uma** pilha de branches por onda, chamando `mergeInOrder` com `pile` e gravando `gates/wave-<n>.json` + linhas `merged`/`failed` no ledger, e a `gateWave` com `verify` declarado no plano. A versão final também **apaga as refs `swarm/<runId>/<task>` das branches que entraram na pilha** (e a `swarm/<runId>/integration` quando a última onda fecha): `git worktree remove` não apaga ref, e sem isto o `git branch` do humano acumuma uma linha por tarefa a cada run — achado da revisão da Task 4. Implemente a versão final aqui, substituindo o rascunho, e teste no Step 1 de `test/e2e.test.js` (Task 11). Não deixe o rascunho no arquivo: o teste de integração abaixo é o que o remove.
 
 - [ ] **Step 5: Rodar para confirmar passagem**
 
@@ -2148,6 +2154,8 @@ test('abort derruba todos os worktrees e o checkout do usuario fica intacto', ()
   assert.equal(existsSync(b.workDir), false);
   assert.equal(git(['rev-parse', 'HEAD'], s.repoDir), headBefore);
   assert.match(readFileSync(join(s.runDir, 'status.tsv'), 'utf8'), /T-01\tdiscarded/);
+  // o teste que prende o vazamento de ref: `worktree remove` nao apaga branch
+  assert.equal(git(['branch', '--list', 'swarm/*'], s.repoDir).trim(), '');
 });
 
 test('nenhum merge parcial: onda incompleta nao entra na integracao', () => {
