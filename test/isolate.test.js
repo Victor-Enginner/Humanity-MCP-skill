@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun, readRun } from '../lib/meta.js';
 import { prepare, touchedFiles, prepareIntegration, mergeInOrder, removeWorktree, branchName } from '../lib/isolate.js';
+import { ownsFile } from '../lib/paths.js';
 
 const G = ['-c', 'user.email=swarm@test', '-c', 'user.name=swarm'];
 const git = (args, cwd) => execFileSync('git', [...G, ...args], { cwd, encoding: 'utf8' }).trim();
@@ -14,6 +15,11 @@ const git = (args, cwd) => execFileSync('git', [...G, ...args], { cwd, encoding:
 function makeRepo() {
   const repoDir = mkdtempSync(join(tmpdir(), 'swarm-repo-'));
   git(['init', '-q', '-b', 'main'], repoDir);
+  // Identidade LOCAL ao repositório (nada global): os worktrees herdam o .git/config, então os
+  // merges que lib/isolate.js faz sem injetar autor deixam de depender da config do host. A
+  // produção continua sem identidade injetada — o merge de integração é histórico do humano.
+  git(['config', 'user.email', 'swarm@test'], repoDir);
+  git(['config', 'user.name', 'swarm'], repoDir);
   mkdirSync(join(repoDir, 'styles'), { recursive: true });
   writeFileSync(join(repoDir, 'styles', 'tokens.css'), ':root { --bg: oklch(0.98 0.01 250); }\n');
   writeFileSync(join(repoDir, 'index.html'), '<h1>base</h1>\n');
@@ -69,6 +75,21 @@ test('touchedFiles ve os dois lados de um rename commitado', () => {
   git(['commit', '-q', '-m', 'rename'], dir);
   const files = touchedFiles({ workDir: dir, baseSha: base }).map((f) => f.file).sort();
   assert.deepEqual(files, ['styles/design.css', 'styles/tokens.css']);
+});
+
+// Um dos arquivos é commitado (o caminho vem de `diff --name-status`), o outro fica só na área de
+// trabalho (vem de `status --porcelain`): as duas leituras que o git costuma citar com quotePath.
+test('touchedFiles devolve caminho acentuado limpo e o lote declarado continua reconhecendo ele', () => {
+  const repoDir = makeRepo();
+  const base = git(['rev-parse', 'HEAD'], repoDir);
+  const runDir = newRun();
+  const { dir } = prepare({ repoDir, runDir, runId: 'r1', taskId: 'T-01', baseSha: base });
+  writeFileSync(join(dir, 'styles', 'página inicial.css'), '.p { margin: 0 }\n');
+  git(['add', '.'], dir); git(['commit', '-q', '-m', 'worker'], dir);
+  writeFileSync(join(dir, 'styles', 'rodapé.css'), '.r { padding: 0 }\n');
+  const files = touchedFiles({ workDir: dir, baseSha: base }).map((f) => f.file).sort();
+  assert.deepEqual(files, ['styles/página inicial.css', 'styles/rodapé.css']);
+  assert.ok(files.every((f) => ownsFile(['styles'], f)), `lote 'styles' nao reconheceu ${files.join(', ')}`);
 });
 
 test('mergeInOrder integra duas branches disjuntas e detecta a colidida', () => {
