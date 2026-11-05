@@ -72,3 +72,38 @@ test('nextWave devolve o que esta desbloqueado dado o estado atual', () => {
   assert.deepEqual(nextWave(tasks, new Map([['T-01', 'gated']])).map((t) => t.id), ['T-02', 'T-03']);
   assert.deepEqual(nextWave(tasks, new Map([['T-01', 'failed']])).map((t) => t.id), []);
 });
+
+// --- Round de revisão (Findings 1 e 2) ---
+
+test('parsePlan: secao de prosa depois de tarefa lanca PlanError e nao reescreve o lote', () => {
+  const soTarefa = '## T-01 a\n- paths: styles/**\n- verify: node build.mjs\n';
+  const comProsa = soTarefa + '\n## Criterios de aceite\n- paths: app/**\n- verify: -\n';
+
+  // sem a secao de prosa, T-01 e dona de "styles" (contrato correto do lote)
+  assert.deepEqual(parsePlan(soTarefa).map((t) => [t.id, t.dirs, t.verify]), [['T-01', ['styles'], 'node build.mjs']]);
+
+  // com a secao, o parser nao pode absorver "- paths: app/**" em T-01: lanca e nomeia a secao
+  assert.throws(() => parsePlan(comProsa), (err) =>
+    err instanceof PlanError && /## Criterios de aceite/.test(err.message));
+});
+
+test('parsePlan: id de tarefa malformado (T-1) e rejeitado, nao descartado em silencio', () => {
+  const md = '## T-01 a\n- paths: styles/**\n\n## T-1 b\n- paths: app/**\n';
+  assert.throws(() => parsePlan(md), PlanError);
+});
+
+test('nextWave libera apenas uma onda validada, nunca camadas topologicas misturadas', () => {
+  const md = '## T-01 a\n- paths: styles/**\n- depends_on: -\n\n'
+    + '## T-02 b\n- paths: components/header/**\n- depends_on: -\n\n'
+    + '## T-03 c\n- paths: components/footer/**\n- depends_on: T-02\n';
+  const tasks = parsePlan(md);
+  assert.deepEqual(computeWaves(tasks).map((w) => w.map((t) => t.id)), [['T-01', 'T-02'], ['T-03']]);
+  // T-02 merged abriria T-03 (onda 2); nextWave nao pode devolver T-01 (onda 1) junto com T-03
+  assert.deepEqual(nextWave(tasks, new Map([['T-02', 'merged']])).map((t) => t.id), ['T-01']);
+});
+
+test('nextWave nao relibera tarefas running nem reported', () => {
+  const tasks = parsePlan(MD);
+  assert.deepEqual(nextWave(tasks, new Map([['T-01', 'running']])).map((t) => t.id), []);
+  assert.deepEqual(nextWave(tasks, new Map([['T-01', 'reported']])).map((t) => t.id), []);
+});
