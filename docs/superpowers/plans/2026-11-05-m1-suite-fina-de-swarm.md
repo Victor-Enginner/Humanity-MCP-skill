@@ -1032,7 +1032,12 @@ git commit -m "swarm: sloplint com quatro regras deterministicas"
 
 **Interfaces:**
 - Consumes: `lintFiles` (`lib/sloplint.js`), `scopeCheck` (`lib/report.js`)
-- Produces: `gateTask({ scope, cssEntries }): { level: 'task', ok, findings }`, `gateWave({ dir, verify, cssEntries }): { level: 'wave', ok, findings, build: { rc, output } | null }`, `runVerify(cmd, cwd): { rc, output }`
+- Produces: `gateTask({ scope, cssEntries }): { level: 'task', ok, findings }`, `gateWave({ dir, verify, cssEntries }): Promise<{ level: 'wave', ok, findings, build: { rc, output, timedOut } | null }>`, `runVerify(cmd, cwd, timeoutMs?): Promise<{ rc, output, timedOut }>`
+
+**Duas coisas que a revisão da Task 7 obrigou a mudar aqui, e que valem para as Tasks 9-14:**
+
+1. **`runVerify` é `async`.** O `execSync(..., { timeout })` mata o `cmd.exe` e **deixa o build vivo** — medido na máquina: filho que grava um arquivo 1,5 s depois, `timeout` de 300 ms, `rc 124` devolvido em 317 ms e o arquivo escrito *depois* de a gate já ter respondido. Um build zumbi na worktree de integração faz o `integrate` seguinte rodar dois builds no mesmo diretório. Só um temporizador de que nós somos donos consegue matar a árvore: `spawn(..., { shell: true })` + `taskkill /F /T /PID` no Windows, `kill('SIGKILL')` fora dele. Por isso `gateWave` e, em cascata, `cmdIntegrate` e `main` do `run.js` são `async` (top-level `await` no ESM). Custo da propagação: três `await`. Custo de não fazer: um estado de worktree que a gate não controla.
+2. **`timedOut` é um campo, não o número 124.** Sem ele, um comando que ele próprio sai 124 é indistinguível de um timeout e o estado `timeout` do ledger mentiria. O `rc` continua 124 no timeout (é a convenção do `--rc` do worker, Task 12), mas o mapeamento da **onda** chaveia em `build.timedOut === true`.
 
 **Decisão que corrige a spec §6 no M1:** a gate de tarefa **não** roda toolchain. Motivo medido em `libra`: worktree git não leva `node_modules`, e `bun install` por tarefa tornaria o custo do swarm dominado por instalar dependência. O build real roda uma vez por onda, na branch de integração.
 
@@ -1067,30 +1072,43 @@ test('gateTask passa quando nada e violado', () => {
   assert.equal(gateTask({ scope: okScope, cssEntries: [{ path: 'a.css', text: '.a { gap: 8px; }' }] }).ok, true);
 });
 
-test('runVerify devolve rc 0 e rc nao-zero sem lancar', () => {
+test('runVerify devolve rc 0 e rc nao-zero sem lancar', async () => {
   const d = mkdtempSync(join(tmpdir(), 'swarm-gate-'));
   writeFileSync(join(d, 'build.mjs'), "console.log('ok');\n");
-  assert.equal(runVerify('node build.mjs', d).rc, 0);
+  assert.equal((await runVerify('node build.mjs', d)).rc, 0);
   writeFileSync(join(d, 'bad.mjs'), "process.exit(7);\n");
-  assert.equal(runVerify('node bad.mjs', d).rc, 7);
+  assert.equal((await runVerify('node bad.mjs', d)).rc, 7);
 });
 
-test('runVerify corta saida longa para caber no ledger', () => {
+test('runVerify corta saida longa para caber no ledger', async () => {
   const d = mkdtempSync(join(tmpdir(), 'swarm-gate-'));
   writeFileSync(join(d, 'loud.mjs'), "console.log('x'.repeat(9000));\n");
-  assert.ok(runVerify('node loud.mjs', d).output.length <= 4000);
+  assert.ok((await runVerify('node loud.mjs', d)).output.length <= 4000);
 });
 
-test('gateWave: build reprovado derruba a onda mesmo com css limpo', () => {
+// O teste que segura a regra 1: depois de um timeout, NINGUEM pode escrever no diretorio.
+// Sem o taskkill da arvore, este teste passa por acidente quando o filho e rápido e falha
+// quando a maquina esta carregada — por isso o filho dorme 1,5 s e o teste espera 2,5 s.
+test('runVerify timeout mata a arvore de processos, nao so o shell', async () => {
+  const d = mkdtempSync(join(tmpdir(), 'swarm-gate-'));
+  writeFileSync(join(d, 'lento.mjs'), "setTimeout(() => require('node:fs').writeFileSync('escrito.txt', 'zumbi'), 1500);\n");
+  const r = await runVerify('node lento.mjs', d, 300);
+  assert.equal(r.rc, 124);
+  assert.equal(r.timedOut, true);
+  await new Promise((res) => setTimeout(res, 2500));
+  assert.equal(existsSync(join(d, 'escrito.txt')), false);
+});
+
+test('gateWave: build reprovado derruba a onda mesmo com css limpo', async () => {
   const d = mkdtempSync(join(tmpdir(), 'swarm-gate-'));
   writeFileSync(join(d, 'fail.mjs'), "process.exit(3);\n");
-  const g = gateWave({ dir: d, verify: 'node fail.mjs', cssEntries: [] });
+  const g = await gateWave({ dir: d, verify: 'node fail.mjs', cssEntries: [] });
   assert.equal(g.ok, false);
   assert.equal(g.build.rc, 3);
 });
 
-test('gateWave sem verify so checa sloplint', () => {
-  const g = gateWave({ dir: process.cwd(), verify: null, cssEntries: [{ path: 'a.css', text: '.a{color:#abcdef}', tokenValues: [] }] });
+test('gateWave sem verify so checa sloplint', async () => {
+  const g = await gateWave({ dir: process.cwd(), verify: null, cssEntries: [{ path: 'a.css', text: '.a{color:#abcdef}', tokenValues: [] }] });
   assert.equal(g.build, null);
   assert.equal(g.findings[0].id, 'SLOP-OFF-TOKEN-COLOR');
 });
@@ -1738,6 +1756,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 
 **Nota de implementação:** `cmdIntegrate` acima está rascunhado de propósito em duas passadas — a versão final roda **uma** pilha de branches por onda, chamando `mergeInOrder` com `pile` e gravando `gates/wave-<n>.json` + linhas `merged`/`failed` no ledger, e a `gateWave` com `verify` declarado no plano. A versão final também **apaga as refs `swarm/<runId>/<task>` das branches que entraram na pilha** (e a `swarm/<runId>/integration` quando a última onda fecha): `git worktree remove` não apaga ref, e sem isto o `git branch` do humano acumuma uma linha por tarefa a cada run — achado da revisão da Task 4. Implemente a versão final aqui, substituindo o rascunho, e teste no Step 1 de `test/e2e.test.js` (Task 11). Não deixe o rascunho no arquivo: o teste de integração abaixo é o que o remove.
 
+**Cascata do `async` da Task 7 (achado da revisão dela):** `gateWave` devolve Promise, então `cmdIntegrate` é `async`, `main` é `async` e a entrada vira `process.exitCode = await main(process.argv.slice(2))` (top-level `await` do ESM). `cmdStart`, `cmdFinish`, `cmdStatus` e `cmdAbort` continuam síncronos — em todo o M1 só a gate de onda roda shell, e ela é o único lugar que precisa esperar. Quem chamar `main` diretamente em teste precisa do `await`; os testes das Tasks 11 e 12 chamam o CLI por processo filho e não mudam.
+
+**O estado `timeout` tem consumidor aqui:** se `build.timedOut === true` na gate da onda, as linhas daquela onda no ledger saem com estado `timeout` (não `failed`) e a onda **não** avança para `merged`; o JSON do `integrate` devolve o `build` com o `output` cortado. É assim que o operador distingue "o build quebrou" de "o build não terminou dentro dos 5 min" — na Task 12 isso é a diferença entre re-rodar e investigar o toolchain.
+
 - [ ] **Step 5: Rodar para confirmar passagem**
 
 Run: `node --test test/run.test.js`
@@ -2207,8 +2229,8 @@ test('worker que morre sem reportar fecha como failed com rc registrado', () => 
 
 Run: `node --test test/fault.test.js`
 Expected: FAIL na primeira vez em `timeout` e `blockedOn` — `run.js` ainda não trata `--rc 124` nem devolve `blockedOn`. Implemente:
-  - em `cmdFinish`: `rc === 124 → estado 'timeout'` (é o código que `execSync` com `timeout` produz via shell no Windows para kill), e qualquer outro `rc != 0 → 'failed'`;
-  - em `cmdIntegrate`: se a onda tem tarefa não `gated`, retorne `{ merged: [], conflicts: [], blockedOn: <primeiro id nao gated> }` sem tocar na branch de integração.
+  - em `cmdFinish`: `rc === 124 → estado 'timeout'`. Aqui o 124 é **convenção com quem despacha o worker** (o host devolve 124 quando mata o agente no tempo dele), não saída de `execSync` — a gate da onda não passa por aqui e usa o campo `timedOut`, porque lá o número sozinho não é confiável (ver Task 7, regra 2). Qualquer outro `rc != 0 → 'failed'`;
+  - em `cmdIntegrate`: se a onda tem tarefa não `gated`, retorne `{ merged: [], conflicts: [], blockedOn: <primeiro id nao gated> }` sem tocar na branch de integração; se `build.timedOut`, registre a onda como `timeout` (já especificado na Task 9).
 
 - [ ] **Step 3: Rodar até passar**
 
@@ -2217,7 +2239,7 @@ Expected: PASS (5 testes)
 
 - [ ] **Step 4: Rodar a suíte inteira**
 
-Run: `node --test test/`
+Run: `node --test "test/**/*.test.js"`
 Expected: PASS em todos os arquivos. Se `e2e` quebrar depois desta mudança, é sinal de que o `integrate` ficou mais rígido do que o teste da Task 11 esperava — ajustar o **teste da Task 11** para integrar uma onda completa, não relaxar o `integrate`.
 
 - [ ] **Step 5: Commit**
@@ -2242,9 +2264,16 @@ git commit -m "swarm: timeout, crash e ausencia de merge parcial viram estado no
 ```bash
 git -C "O:/DEV/A JORNADA/PROJETOS/libra" status --porcelain        # esperado: vazio
 git -C "O:/DEV/A JORNADA/PROJETOS/libra" rev-parse --abbrev-ref HEAD  # esperado: main
+git -C "O:/DEV/A JORNADA/PROJETOS/libra" config core.longpaths                    # esperado: true
+tasklist //FI "IMAGENAME eq bun.exe" 2>/dev/null | head -5        # builds de runs anteriores
 ```
 
 Se sujo: **pare e pergunte**. Worktree ramifica do HEAD; árvore suja significa que o swarm trabalharia num estado que não é o que está commitado.
+
+Os outros dois são checks aprendidos nas revisões, não burocracia:
+
+- **`core.longpaths`.** Os lotes reais deste repo têm `(frontend)/(marketing)` e o `runDir` acrescenta `runs/<id>/worktrees/<task>/` na frente. No Windows sem longpaths, `git worktree add` falha no meio do run com erro de caminho, não com erro do swarm. Se vier vazio, `git -C <repo> config core.longpaths true` antes de `init` — é config do repo, não código.
+- **Build órfão.** A gate de onda mata a árvore do processo no timeout (Task 7), mas um run *anterior* pode ter deixado um build vivo nesta worktree de integração, e `integrate` sobre ele faria dois builds no mesmo diretório ao mesmo tempo. Se o `tasklist` mostrar `bun.exe`/`node.exe` que você não reconheceu, termine antes de integrar e anote no `docs/dry-run-libra.md` o que estava vivo. Nunca re-rodar `integrate` com um build do `integrate` passado ainda escrevendo.
 
 - [ ] **Step 2: Escrever `runs/<id>/plan.md` com os três lotes reais**
 
