@@ -190,7 +190,9 @@ git commit -m "swarm: base do repo e posse de lote por diretorio"
 
 **Interfaces:**
 - Consumes: `scopeDir`, `setsOverlap` de `lib/paths.js`
-- Produces: `class PlanError`; `parsePlan(md: string): Task[]`; `computeWaves(tasks: Task[]): Task[][]`; `validateWaves(waves: Task[][]): void` (lança `PlanError`); `nextWave(tasks: Task[], states: Map<string,string>): Task[]`. `Task = { id: string, title: string, dirs: string[], dependsOn: string[], verify: string | null }`
+- Produces: `class PlanError`; `parsePlan(md: string): Task[]`; `computeWaves(tasks: Task[]): Task[][]`; `validateWaves(waves: Task[][]): void` (lança `PlanError`); `nextWave(tasks: Task[], states: Map<string,string>): Task[]`. `Task = { id: string, title: string, body: string, dirs: string[], dependsOn: string[], verify: string | null }`
+
+**Emenda da Task 8 (ruling do controlador, 2026-11-05):** `Task.body` existia? Não — até aqui o plano tinha uma linha de título por tarefa e nada mais, e o worker recebia uma frase como especificação completa. A spec chama o pacote por tarefa de *context pack* (§ "Três contratos"); um título de cinco palavras não é um context pack, e o dry run da Task 13 mediria agentes adivinhando. `parsePlan` passa a acumular no corpo da tarefa **toda linha que não é heading, não é um dos três campos e vem depois do heading da tarefa até o próximo `## `**: `body` é `''` quando não há prosa (o `#` de nível 1 do cabeçalho do plano vem antes de qualquer tarefa, então cai no `if (!cur) continue` e não contamina ninguém). Linhas de campo continuam indo para os campos; um `## ` que não é tarefa continua lançando `PlanError` — a emenda não relaxa essa guarda, que é a barreira contra o lote fantasma da revisão da Task 2.
 
 - [ ] **Step 1: Escrever os testes que falham**
 
@@ -229,6 +231,15 @@ test('parsePlan le tarefas, dependencias e lote', () => {
 
 test('parsePlan: sem tarefa lanca PlanError', () => {
   assert.throws(() => parsePlan('# nada aqui'), PlanError);
+});
+
+// A emenda do body (ruling da Task 8): o worker precisa de especificacao, e ela mora no plano que o
+// humano revisa — nao num arquivo paralelo. Sem prosa o corpo e '' (nem null, nem o titulo).
+test('parsePlan guarda o corpo da tarefa e nao inventa um', () => {
+  assert.equal(parsePlan(MD)[0].body, '');
+  const t = parsePlan('## T-01 x\n- paths: styles/**\n- depends_on: -\n- verify: -\n\nFaca o cabecalho usar --accent.\nNao toque em tokens.css.\n\n## T-02 y\n- paths: components/**\n');
+  assert.equal(t[0].body, 'Faca o cabecalho usar --accent.\nNao toque em tokens.css.');
+  assert.equal(t[1].body, '');
 });
 
 test('parsePlan: dependencia inexistente lanca PlanError', () => {
@@ -285,27 +296,37 @@ import { scopeDir, setsOverlap } from './paths.js';
 export class PlanError extends Error {}
 
 const HEADING = /^## (T-\d{2,})\s+(.+)$/;
+// Um "## " que não é tarefa não pode herdar os campos da tarefa anterior (revisão da Task 2, I1)
+// nem virar corpo de tarefa: a guarda vem antes do acúmulo de `body`, nos dois sentidos.
+const SECAO = /^## /;
 const FIELD = /^-\s+(paths|depends_on|verify):\s*(.*)$/;
 const list = (v) => v.split(',').map((s) => s.trim()).filter(Boolean);
 
 export function parsePlan(md) {
   const tasks = [];
   let cur = null;
+  const corpo = [];
+  const fechaCorpo = () => { if (cur) cur.body = corpo.join('\n').trim(); corpo.length = 0; };
   for (const line of md.split(/\r?\n/)) {
     const h = line.match(HEADING);
     if (h) {
-      cur = { id: h[1], title: h[2].trim(), dirs: [], dependsOn: [], verify: null };
+      fechaCorpo();
+      cur = { id: h[1], title: h[2].trim(), body: '', dirs: [], dependsOn: [], verify: null };
       tasks.push(cur);
       continue;
     }
+    if (SECAO.test(line)) {
+      throw new PlanError(`secao "${line.trim()}" fora do formato "## T-NN <titulo>"`);
+    }
     if (!cur) continue;
     const f = line.match(FIELD);
-    if (!f) continue;
+    if (!f) { corpo.push(line); continue; }
     const v = f[2].trim();
-    if (f[1] === 'paths') cur.dirs = list(v).map(scopeDir);
+    if (f[1] === 'paths') cur.dirs = v === '-' ? [] : list(v).map(scopeDir);
     else if (f[1] === 'depends_on') cur.dependsOn = v === '-' ? [] : list(v);
     else cur.verify = v === '-' ? null : v;
   }
+  fechaCorpo();
   if (!tasks.length) throw new PlanError('plano sem tarefas: use "## T-01 <titulo>"');
   const ids = new Set(tasks.map((t) => t.id));
   if (ids.size !== tasks.length) throw new PlanError('id de tarefa duplicado');
@@ -1289,8 +1310,13 @@ git commit -m "swarm: gate de tarefa sem toolchain e gate de onda com build unic
 - Create: `lib/briefing.js`, `lib/prompt.js`, `seed/floor.md`, `seed/themes/verde-fluxo.md`, `seed/themes/neutro-editorial.md`, `seed/ATTRIBUTION.md`, `test/prompt.test.js`
 
 **Interfaces:**
-- Consumes: nada
+- Consumes: `Task.body` (emenda da Task 2, logo abaixo)
 - Produces: `loadFloor(seedDir): string`, `loadTheme(seedDir, name): string`, `repoConventions(repoDir): string`, `renderPrompt({ task, waveNumber, run, floor, theme, conventions }): string`, `writePrompt({ runDir, taskId, attempt, text }): string`
+
+**Emenda do controlador (achados da própria Task 8, 2026-11-05), dois itens e os dois neste módulo:**
+
+1. **O corpo da tarefa entra no prompt.** `${task.title}` sozinho é uma frase; a especificação é o `body` do plano. `renderPrompt` imprime `task.body` (já trimado pelo parser) logo abaixo do título, sem inventar seção nova quando ele está vazio, e corta o começo com `[corpo cortado]` acima de 6000 caracteres — mesmo teto e mesma direção do `repoConventions`, porque o que um plano escreve primeiro é o que importa. O teto fica no *prompt*, não no parser: o `plan.md` do humano continua sendo o texto inteiro.
+2. **O parágrafo das dependências tem que dizer a verdade do run, e a verdade está mudando na Task 9.** A versão inicial deste módulo escreveu "o que as dependências prometem não está no seu worktree", que era honesto com o `cmdStart` rascunhado (todo worktree sai do `baseSha` do run). Isso é um defeito de design, não de texto — a spec (§ "Ledger como barragem") diz que *a onda seguinte só abre quando a atual passa na gate*, e com worktree saindo do base esse `depends_on` não entrega nada além do nome da tarefa. A Task 9 passa a cortar worktree de onda > 1 do head da branch de integração e a recusar `start` de tarefa com dependência não integrada. Feito isso, o prompt afirma o invariant como fato — "as dependências declaradas já estão no seu worktree; leia-as antes de escrever, e não recrie o que elas entregam" — e continua proibindo escrever fora do lote. Se a Task 9 chegar aqui e ainda não fizer o corte pelo head, é a Task 9 que muda, não este texto de volta.
 
 - [ ] **Step 1: Escrever `seed/floor.md`**
 
@@ -1695,6 +1721,7 @@ Expected: FAIL — `Cannot find module '../run.js'`
 #!/usr/bin/env node
 // run.js
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parsePlan, computeWaves, validateWaves, nextWave, PlanError } from './lib/plan.js';
@@ -1753,6 +1780,13 @@ function cmdPlan(o) {
 
 - [ ] **Step 4: Implementar `start`, `finish`, `integrate`, `status`, `abort` e o `main`**
 
+**Quatro requisitos que a Task 8 trouxe para cá, e que este passo é dono de cumprir** (não são refinamento, são correção de design):
+
+1. `cmdStart` recusa tarefa com dependência não `merged` e corta worktree de onda > 1 do head da branch de integração — a barragem da spec vira código, e `depends_on` passa a entregar arquivos reais ao worker.
+2. `cmdFinish` diffa contra `baseOf(...)` (merge-base da branch da tarefa com a de integração), nunca contra `run.baseSha` cru — sem isto, o item 1 faria a gate reprovar todo worker de onda 2 pelos arquivos da onda 1.
+3. `cssEntries` supplying `tokenValues` desde o arquivo de tokens do worktree (`--tokens`, default `styles/tokens.css`) e `null` quando ele não existe; `tokenSource` vai no `gate.json` para o dry run poder dizer quanta gate estava armada.
+4. `gitIn(repoDir, args)` (helper que o `cmdAbort` já usa sem nunca ter sido definido no plano) retorna **stdout em utf8 já trimado**, via `execFileSync` sem shell — os itens 1 e 2 leem sha por ele, e um helper que engole a saída quebra as duas coisas.
+
 ```js
 function attemptOf(runDir, taskId) {
   let n = 1;
@@ -1760,11 +1794,46 @@ function attemptOf(runDir, taskId) {
   return existsSync(join(runDir, 'tasks', taskId, `attempt-${n - 1}`, 'report.md')) ? n : Math.max(1, n - 1);
 }
 
+// `gitIn` é o único git que o run.js fala. `execFileSync` SEM shell: com shell, o Git Bash reinterpreta
+// `/F` e consome argumentos que eram para o git (o mesmo erro que a gate da Task 7 pagou para aprender).
+// Retorna stdout utf8 já trimado — os itens 1 e 2 abaixo leem SHA por aqui, e devolver o buffer cru ou
+// engolir a saída (o `stdio: 'ignore'` que o rascunho do `cmdAbort` trazia) quebra os dois caminhos.
+function gitIn(repoDir, args) {
+  return execFileSync('git', args, { cwd: repoDir, encoding: 'utf8', windowsHide: true }).trim();
+}
+
+// Base de diff de UMA tarefa: o commit onde a branch dela nasceu. Para onda 1 é o baseSha do run por
+// construção; para onda > 1 é o merge-base com a integração — que É o head da integração no momento do
+// `cmdStart`, porque o worktree foi cortado dele. Diffar tarefa de onda 2 contra `run.baseSha` mostraria
+// os arquivos da onda 1 como se o worker os tivesse tocado, e a gate reprovaria a tarefa certa.
+function baseOf(repoDir, run, branch) {
+  try {
+    return gitIn(repoDir, ['merge-base', branch, `swarm/${run.runId}/integration`]);
+  } catch {
+    return run.baseSha;
+  }
+}
+
 function cmdStart(o) {
   const run = readRun(o.run);
   const task = tasksOf(o.run).find((t) => t.id === o.task);
   const attempt = Number(o.attempt ?? 1);
-  const { dir, branch } = prepare({ repoDir: run.repoDir, runDir: o.run, runId: run.runId, taskId: task.id, baseSha: run.baseSha });
+  // Barragem da spec (§ "Ledger como barragem": a onda seguinte só abre quando a atual passa na
+  // gate) virada código, não instrução: tarefa com dependência não integrada não ganha worktree.
+  const states = stateOf(o.run);
+  const faltando = task.dependsOn.filter((d) => states.get(d) !== 'merged');
+  if (faltando.length) {
+    throw new PlanError(`${task.id}: depende de ${faltando.join(', ')} e nao esta liberada — rode integrate primeiro`);
+  }
+  // Onda > 1 trabalha SOBRE o que a onda anterior entregou: o worktree sai do head da branch de
+  // integração, não do baseSha do run. Sem isto, `depends_on` não entrega nada ao worker além do
+  // nome, e a pilha de ondas é teatro. (Achado da Task 8; ver a emenda do prompt dela.)
+  // `rev-parse --verify` é quem responde "existe": na primeira onda a ref ainda não foi criada,
+  // execFileSync lança, e o base do run é a resposta certa mesmo.
+  const integRef = `swarm/${run.runId}/integration`;
+  let baseSha = run.baseSha;
+  try { baseSha = gitIn(run.repoDir, ['rev-parse', '--verify', integRef]); } catch { /* onda 1 */ }
+  const { dir, branch } = prepare({ repoDir: run.repoDir, runDir: o.run, runId: run.runId, taskId: task.id, baseSha });
   const promptFile = writePrompt({
     runDir: o.run, taskId: task.id, attempt,
     text: renderPrompt({
@@ -1782,11 +1851,27 @@ function cmdStart(o) {
   return 0;
 }
 
-function cssEntries(o.run, task, files) {
-  return files.filter((f) => f.file.endsWith('.css')).map((f) => ({
+// `tokenValues` NÃO é opcional de enfeite: `lintCss` (lib/sloplint.js:117) só roda a
+// SLOP-OFF-TOKEN-COLOR quando recebe o array, e sem ele a regra que o piso cita em prosa fica
+// arquivada sem nunca ter disparado — que foi o achado 2 da Task 8. `null` (arquivo de tokens não
+// existe) é diferente de `[]` (tema sem cores): com `[]` toda cor literal vira achado, e num repo
+// legado como o `libra` isso reprovaria tarefa por tarefa sem culpa do worker. Por isso o
+// `tokenSource` vai junto no `gate.json`: o dry run da Task 13 precisa conseguir dizer quanto da
+// gate estava de fato armada.
+function cssEntries(o, run, task, files) {
+  const tokensRel = (o.tokens ?? 'styles/tokens.css').replaceAll('\\', '/');
+  const tokensAbs = join(worktreePath(o.run, task.id), tokensRel);
+  const tokenValues = existsSync(tokensAbs)
+    ? [...readFileSync(tokensAbs, 'utf8').matchAll(/--[\w-]+\s*:\s*([^;]+);/g)].map((m) => m[1].trim())
+    : null;
+  const entries = files.filter((f) => f.file.endsWith('.css')).map((f) => ({
     path: f.file,
+    tokenValues,
     text: (() => { try { return readFileSync(join(worktreePath(o.run, task.id), f.file), 'utf8'); } catch { return ''; } })(),
   }));
+  // `tokenSource` no `gate.json`: sem ele o reador do dry run não distingue "gate de cor armada"
+  // de "repo sem tokens.css, regra arquivada" — o achado 2 da Task 8 exatamente.
+  return { entries, tokenSource: tokenValues === null ? null : tokensRel };
 }
 
 function cmdFinish(o) {
@@ -1803,11 +1888,19 @@ function cmdFinish(o) {
     out({ ok: false, reason: 'worker reportou rc != 0', findings: [] });
     return 0;
   }
-  const files = touchedFiles({ workDir, baseSha: run.baseSha });
+  // Consequência obrigatória da emenda do `cmdStart`: uma tarefa de onda > 1 NÃO sai do
+  // `run.baseSha`, então diffar contra `run.baseSha` mostraria os arquivos da onda anterior como
+  // se o worker tivesse tocado neles — e a gate reprovaria a tarefa certa. A base de cada tarefa é
+  // o ponto onde a branch dela nasceu, que é exatamente o `merge-base` entre a branch da tarefa e a
+  // de integração; na onda 1 (integração ainda não existe) cai no baseSha do run, que é o valor
+  // correto por construção. As duas ordens de `finish` (antes e depois de um `integrate`) dão o
+  // mesmo resultado, porque baseSha é ancestral da integração por construção do `prepareIntegration`.
+  const files = touchedFiles({ workDir, baseSha: baseOf(run.repoDir, run, latest(o.run, task.id).branch) });
   const scope = scopeCheck({ dirs: task.dirs, files });
-  const gate = gateTask({ scope, cssEntries: cssEntries(o.run, task, files) });
+  const { entries, tokenSource } = cssEntries(o, run, task, files);
+  const gate = gateTask({ scope, cssEntries: entries });
   writeFileSync(join(o.run, 'tasks', task.id, `attempt-${attempt}`, 'gate.json'),
-    JSON.stringify({ ...gate, files }, null, 2) + '\n');
+    JSON.stringify({ ...gate, tokenSource, files }, null, 2) + '\n');
   append(o.run, { task: task.id, state: gate.ok ? 'gated' : 'failed', rc: 0,
     start: latest(o.run, task.id).start, end: stamp(), branch: latest(o.run, task.id).branch,
     log: reportFile.replaceAll('\\', '/'), tokens: report.tokens, pid: null });
@@ -2209,6 +2302,14 @@ test('tres agentes em lotes disjuntos produzem uma onda integrada', () => {
   const a = worker(s, 'T-01', { 'styles/tokens.css': ':root { --bg: oklch(0.99 0.002 260); --ink: oklch(0.2 0.01 260); }\n' });
   assert.equal(a.result.ok, true, JSON.stringify(a.result));
 
+  // A barragem da spec é o protocolo testado, não uma conveniência: T-02 e T-03 dependem de T-01,
+  // então o `start` deles só acontece depois de `integrate` fechar a onda 1 — e é isso que põe os
+  // arquivos de T-01 dentro do worktree deles (emenda da Task 8, item 1 da Task 9). Este teste é o
+  // lugar onde a suíte prova que a onda seguinte trabalha sobre a anterior.
+  const i1 = JSON.parse(cli(['integrate', '--run', s.runDir]));
+  assert.deepEqual(i1.merged, ['T-01'], JSON.stringify(i1));
+  assert.equal(i1.conflicts.length, 0);
+
   const b = worker(s, 'T-02', { 'components/header/header.css': '.h { padding: 8px; }\n' });
   const c = worker(s, 'T-03', { 'components/footer/footer.css': '.f { padding: 16px; }\n' });
   assert.equal(b.result.ok, true); assert.equal(c.result.ok, true);
@@ -2418,18 +2519,30 @@ Os outros dois são checks aprendidos nas revisões, não burocracia:
 - depends_on: T-02
 - verify: -
 
+Rota de precificacao existente: reescrever a pagina usando os componentes de T-02, sem criar
+componente novo dentro desta pasta. Titulo e subtitulo em PT; a variant EN fica em T-03.
+Nao tocar em tokens nem em componentes compartilhados — se faltar um componente, e ## Blocked.
+
 ## T-02 componentes de marketing
 - paths: apps/web/components/marketing/**
 - depends_on: -
 - verify: -
 
+Extrair/corrigir os blocos da secao de precificacao: card de plano, tabela comparativa e CTA.
+Props tipadas, sem hex literal — cores so via tokens do tema. Este lote e o contrato que a
+onda 2 consome: nomes de componente estaveis importam mais que beleza aqui.
+
 ## T-03 textos pt/en
 - paths: apps/web/messages/**
 - depends_on: T-02
-- verify: -
+
+Copy PT/EN da secao de precificacao nos arquivos de messages ja existentes, seguindo a estrutura
+de chave do repo. Sem placeholder tipo Lorem ipsum; preco e o que esta em production.json hoje.
 ```
 
 **Sintaxe de lote (regra, não opção):** um lote de diretório **sempre** termina em `/**`. `scopeDir` corta um caminho literal sem wildcard no diretório pai — `apps/web/messages` viraria posse de `apps/web` inteiro, e o swarm perderia o isolamento que é a tese do M1. Um arquivo literal declarado sozinho (`styles/tokens.css`) herda o diretório dele de propósito (é o que a spec afirma no Task 1).
+
+**O corpo de cada tarefa não é comentário** (emenda C3, ruling da Task 8): `parsePlan` acumula as linhas de prosa depois dos campos em `Task.body`, `renderPrompt` as imprime abaixo do título e o teto de 6000 caracteres corta com `[corpo cortado]`. Um plano de dry run escrito só com título mediria agentes adivinhando — o que a spec chama *context pack* é o body, e é ele que a fixture declara. Se ao rodar o `plan` o JSON dos tasks vier com `body: ''`, o parser está sem a emenda da Task 2 e o dry run para ali.
 
 T-02 é a onda 1 (componentes); T-01 e T-03 são a onda 2 (página e copy consomem os componentes). Os três lotes são disjuntos por diretório, e as rotas com parênteses testam o path no Windows de verdade.
 
@@ -2450,11 +2563,19 @@ node run.js start --run runs/<id> --task T-02
 
 Dispatche **um** subagente de background com o conteúdo exato de `tasks/T-02/attempt-1/prompt.md` como prompt, e a linha: *"sua área de trabalho é `<workDir>`; use caminhos absolutos em toda ferramenta"*. Depois: `node run.js finish --run runs/<id> --task T-02 --rc 0`.
 
-- [ ] **Step 5: Onda 2 — dois workers em paralelo**
+- [ ] **Step 5: Fechar a onda 1 antes de abrir a onda 2**
 
-`start` em T-01 e T-03, dois subagentes de background simultâneos, `finish` nos dois.
+```bash
+node run.js integrate --run runs/<id>
+```
 
-- [ ] **Step 6: Integrar e medir**
+Expected: `{ "merged": ["T-02"], ... }` e as linhas `merged` no ledger. Este passo não é burocracia de medição: é ele que põe os componentes de T-02 dentro do worktree de T-01 e T-03 (emenda da Task 8 / item 1 da Task 9). **Sem ele, `start` em T-01 recusa com `PlanError`** — e se você chegar aqui e ele não recusar, o item 1 da Task 9 não foi implementado: pare e volte lá, porque o resto da medição sairia mentindo.
+
+- [ ] **Step 6: Onda 2 — dois workers em paralelo**
+
+`start` em T-01 e T-03 (dois, agora liberados), dois subagentes de background simultâneos, `finish` nos dois. Eles leem os componentes que já estão no worktree e escrevem a página e o copy em cima do que existe — é essa a diferença entre um swarm com ondas e três agentes no mesmo repo.
+
+- [ ] **Step 7: Integrar e medir**
 
 ```bash
 node run.js integrate --run runs/<id>
@@ -2472,7 +2593,7 @@ Preencher `docs/dry-run-libra.md` com os **seis números**, sem yorum:
 | Custo do worktree | `git -C <repo> worktree list` e bytes de `runs/<id>/worktrees`; tempo de `git worktree add` |
 | Toolchain | `bun install` na integração: tempo e se o build passou |
 
-- [ ] **Step 7: Fechar sem deixar resíduo**
+- [ ] **Step 8: Fechar sem deixar resíduo**
 
 ```bash
 git -C "O:/DEV/A JORNADA/PROJETOS/libra" worktree list       # conferir
@@ -2482,11 +2603,11 @@ git -C "O:/DEV/A JORNADA/PROJETOS/libra" branch -D swarm/<id>/T-01 swarm/<id>/T-
 
 **Nenhum push. Nenhuma branch do `main` movida. Nada publicado.** Se você quiser o resultado, a branch de integração fica no repo e você revisa.
 
-- [ ] **Step 8: Escrever o veredito do risco 1**
+- [ ] **Step 9: Escrever o veredito do risco 1**
 
 No fim de `docs/dry-run-libra.md`: com esses números, o swarm de 3 vale a pena para site, ou não? Se não, o M1 é um teste de uma agente só e a spec recebe uma ratchet.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add docs/dry-run-libra.md
