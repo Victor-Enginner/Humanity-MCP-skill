@@ -9,7 +9,7 @@ O `integrate` do CLI ja mergeou, em ordem de onda, o que dava para mergear, e gr
 
 ## Entrada (leia, nunca edite)
 - `status.tsv` — o ledger; cada linha diz estado e rc por tarefa. Quem escreve e so o `run.js` (single-writer): voce le e reporta, nao corrige estado na mao.
-- `gates/wave-<n>.json` — gerados pelo `integrate` por onda declarada no plano com `verify`: build (`rc`, `timedOut`), achados de sloplint na integracao e `tokenSource`.
+- `gates/wave-<n>.json` — gerados pelo `integrate` por onda declarada no plano com `verify`: build (`rc`, `timedOut`), achados de sloplint na integracao e `tokenSource` (o `tokens.css` lido na worktree de integracao — caminho via `--tokens`, default `styles/tokens.css`; `null` = repo sem tokens, regra de cor arquivada).
 - stdout do `integrate` — `{merged, conflicts, blockedOn?, build?}`. `conflicts` tem duas formas: por branch (`{branch, files, task}`) e de onda inteira por erro nao-colisao (`{wave, branches, files: [], error}`).
 - `tasks/*/attempt-*/report.md` — inclusive os blocos `## Blocked`, que o `finish` ja trazia no JSON; o texto do bloqueio e a descricao da tarefa futura.
 
