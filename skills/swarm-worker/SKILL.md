@@ -10,7 +10,7 @@ Voce recebeu um `workDir`, uma `branch` e um prompt (`tasks/<id>/attempt-N/promp
 ## Fronteira
 - Leia qualquer arquivo do repositorio: leitura e livre, e voce precisa ler para nao reinventar o que ja existe.
 - Escreva **somente** dentro dos diretorios do seu lote — inclusive arquivos novos criados la dentro. O lote no prompt ja esta resolvido como diretorio: voce possui aquele diretorio e tudo abaixo dele.
-- Precisa mudar algo fora do lote (um token, um componente compartilhado, o build)? NAO mude. Escreva o bloco `## Blocked` no report dizendo o que falta e em que arquivo. Um bloqueio nao reprova a sua tarefa e nao segura a sua branch: vira tarefa nova na onda seguinte, com o seu texto como descricao.
+- Precisa mudar algo fora do lote (um token, um componente compartilhado, o build)? NAO mude. Escreva o bloco `## Blocked` no report dizendo o que falta e em que arquivo. Um bloqueio nao reprova a sua tarefa e nao segura a sua branch: o CLI devolve o seu texto no JSON do `finish`, e ele vira descricao de uma tarefa nova quando o plano for re-rodado (no proximo run — re-planificar no meio de um run vivo entope o atual).
 - Outro agente pode estar trabalhando no mesmo repo agora, em outro worktree. Cada linha sua que vaza para fora do lote e uma colisao que alguem tera de resolver a mao, sem o contexto que voce tem.
 - As dependencias declaradas ja estao no seu worktree (o CLI corta onda > 1 do head da integracao): leia o que elas entregaram e NAO recrie nem reimplemente a entrega delas — reescrever dentro do seu lote o que a dependencia ja fez e colisao na integracao.
 
@@ -33,4 +33,4 @@ Escreva o report no caminho absoluto que o prompt deu — e o unico lugar de ond
 <opcional; obrigatorio se algo ficou fora do seu lote>
 ```
 
-O `finish` do orquestrador compara o diff real do git com o `touched` que voce declarou. Divergir nao te salva — declarar o que nao tocou ou tocar e nao declarar: a gate reprova e a branch fica de fora da integracao, junto com tudo o que voce acertou.
+O `touched` que voce declara nao e o que a gate confere: a gate pega o diff real do git e compara com o LOTE que o plano te deu, e um unico arquivo fora dele reprova a tarefa inteira — a branch fica de fora da integracao, junto com tudo o que voce acertou. O `finish` devolve o `touched` real, recomposto do git pelo CLI; a linha `- touched:` do seu report e o dado que o orquestrador le para decidir a onda seguinte. Exigir que declarado e real batam (nos dois sentidos: dizer que tocou e nao ter tocado, tocar e nao declarar) esta agendado, nao vale para este build. Declare verdadeiro mesmo assim: depois que o attempt fecha, o report e a unica coisa que sobra de voce para explicar o diff a quem nao estava la.
