@@ -87,6 +87,9 @@ test('worker que morre sem reportar fecha como failed com rc registrado', () => 
 // ---------------------------------------------------------------------------
 // Emenda do controlador (carry das Tasks 10 e 11, item 2): os tres testes NOVOS
 // que fazem o TDD desta Task. Antes do item 3 eles falham de proposito.
+// O quarto veio da contra-emenda 001d8aa (achado M-2): nasce VERDE de proposito —
+// prende o caso positivo da lista vazia. Se `touchedList` voltasse a ser `list`
+// em lib/report.js, o `-` fantasma geraria TOUCHED-DECLARED-NOT-DONE aqui.
 
 test('tarefa running SEM pid gravado nao e crash: desconhecido nao e morto (carry Task 10, item i)', () => {
   const s = setup();
@@ -118,4 +121,14 @@ test('diff-real sem touched declarado reprova: TOUCHED-DONE-NOT-DECLARED', () =>
   const r = JSON.parse(cli(['finish', '--run', s.runDir, '--task', 'T-01', '--rc', '0']));
   assert.equal(r.ok, false, JSON.stringify(r));
   assert.match(JSON.stringify(r.findings), /TOUCHED-DONE-NOT-DECLARED/);
+});
+
+test('touched vazio com diff zero passa: lista vazia nao e mentira (prende o touchedList)', () => {
+  const s = setup();
+  cli(['start', '--run', s.runDir, '--task', 'T-01']);
+  writeFileSync(join(s.runDir, 'tasks', 'T-01', 'attempt-1', 'report.md'),
+    '## Summary\nnao havia o que fazer\n- touched: -\n- tokens: 0\n');
+  const r = JSON.parse(cli(['finish', '--run', s.runDir, '--task', 'T-01', '--rc', '0']));
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(latest(s.runDir, 'T-01').state, 'gated');
 });
