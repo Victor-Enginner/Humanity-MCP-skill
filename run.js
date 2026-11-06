@@ -184,10 +184,17 @@ function cmdFinish(o) {
   const attempt = Number(o.attempt ?? 1);
   const workDir = worktreePath(o.run, task.id);
   const reportFile = join(o.run, 'tasks', task.id, `attempt-${attempt}`, 'report.md');
-  const report = parseReport(existsSync(reportFile) ? readFileSync(reportFile, 'utf8') : '');
+  const hasReport = existsSync(reportFile);
+  const report = parseReport(hasReport ? readFileSync(reportFile, 'utf8') : '');
   const rc = Number(o.rc ?? 0);
   if (rc !== 0) {
-    append(o.run, { task: task.id, state: 'failed', rc, start: latest(o.run, task.id).start, end: stamp(),
+    // 124 é a CONVENÇÃO COM O DISPATCHER (emenda Task 12; Step 2 do plano): o host devolve 124
+    // quando mata o agente no tempo dele — aqui o número sozinho É confiável, porque vem do
+    // `--rc` que o operador jura ter observado, não da saída crua de execSync. A gate de ONDA é
+    // outra coisa e continua chaveando em `build.timedOut` (Task 7 regra 2): lá o 124 de um
+    // comando que saiu 124 por conta própria não seria timeout. Qualquer outro rc != 0 -> 'failed'.
+    const estado = rc === 124 ? 'timeout' : 'failed';
+    append(o.run, { task: task.id, state: estado, rc, start: latest(o.run, task.id).start, end: stamp(),
       branch: task && latest(o.run, task.id).branch, log: reportFile.replaceAll('\\', '/'), tokens: report.tokens, pid: null });
     out({ ok: false, reason: 'worker reportou rc != 0', findings: [] });
     return 0;
@@ -203,7 +210,29 @@ function cmdFinish(o) {
   const files = touchedFiles({ workDir, baseSha });
   const scope = scopeCheck({ dirs: task.dirs, files });
   const { entries, tokenSource } = cssEntries(o, run, task, files);
-  const gate = gateTask({ scope, cssEntries: entries });
+  let gate = gateTask({ scope, cssEntries: entries });
+  // Coerção touched (emenda Task 12, item 3): no caminho rc == 0 COM report, o conjunto declarado
+  // na linha `- touched:` e o diff real recomposto contra `attempt-N/base.txt` têm de ser o MESMO
+  // conjunto, dos dois sentidos: declarado-sem-toque é TOUCHED-DECLARED-NOT-DONE (promessa não
+  // cumprida), toque-sem-declarado é TOUCHED-DONE-NOT-DECLARED (trabalho escondido). Um finding
+  // por arquivo, com `file`. É achado NOSSO, somado ao veredito da gate — não substitui o
+  // scopeCheck: o SCOPE-OUTSIDE-LOT continua a gate própria dele (diff vs LOTE), e um worker pode
+  // violar as duas e o JSON traz os dois tipos. Sem report não há declaração a confrontar: a
+  // coerção fica muda (o report ausente é caso do rc/dispatcher, não do touched).
+  if (hasReport) {
+    const declared = new Set(report.touched);
+    const real = new Set(files.map((f) => f.file));
+    const coercions = [];
+    for (const f of report.touched) if (!real.has(f)) coercions.push({
+      id: 'TOUCHED-DECLARED-NOT-DONE', file: f, line: null,
+      message: 'declarado no - touched: do report mas ausente no diff real do git',
+    });
+    for (const f of files) if (!declared.has(f.file)) coercions.push({
+      id: 'TOUCHED-DONE-NOT-DECLARED', file: f.file, line: null,
+      message: 'presente no diff real do git mas ausente no - touched: declarado',
+    });
+    if (coercions.length) gate = { ...gate, ok: false, findings: [...gate.findings, ...coercions] };
+  }
   writeFileSync(join(o.run, 'tasks', task.id, `attempt-${attempt}`, 'gate.json'),
     JSON.stringify({ ...gate, tokenSource, files }, null, 2) + '\n');
   append(o.run, { task: task.id, state: gate.ok ? 'gated' : 'failed', rc: 0,
