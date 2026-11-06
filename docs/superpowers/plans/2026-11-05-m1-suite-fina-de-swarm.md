@@ -2049,6 +2049,13 @@ git commit -m "swarm: cli dono do estado com start, finish, integrate, status e 
 - Consumes: `COMMANDS` de `run.js`
 - Produzes: três skills no formato Anthropic Agent Skills (`SKILL.md` com frontmatter `name` + `description`), que são a interface entre o host e o CLI
 
+**Emenda do controlador (revisão da Task 10, 2026-11-05) — a skill é contrato documental; três frases do texto abaixo ensinam o que o código NÃO faz e foram corrigidas na fix round, com o código correspondente adiada para a Task 12 (registrada no ledger):**
+
+1. **`crashed[]` do `status` dispara SIM — e errado.** O texto abaixo diz "M1 não grava pid, então essa linha não dispara". Verificado: `pid: null` → campo vazio → `Number('') === 0` → `isAlive(0)` é `false` → `crashedRuns` marca TODO task cujo último estado é `running`; o `status` no meio de uma onda imprime um `{crashed:[...]}` falso. A skill passa a descrever o ruído como ruído ("em M1, tarefa `running` aparece em `crashed` porque não há pid; é limitação conhecida, não incidente") e a correção do predicado (pid ausente ⇒ *estado desconhecido*, não morto) é da Task 12.
+2. **`finish` não compara o `touched` declarado com o diff.** Só `scopeCheck` (diff vs LOTE) reprova; `out.touched` é recomposto do git e o `touched` do report não tem consumidor. A frase da skill-worker vira a verdade, e a frase homóloga em `lib/prompt.js` ("divergir dos dois jeitos reprova a tarefa") — que mente ao worker desde a Task 8 — é ajustada na mesma fix round; *implementar* a coerção declarada-×-real é carrego para a Task 12, com teste.
+3. **Rodar `plan` de novo num runDir vivo entope o run.** `cmdPlan` anexa linha `planned` para toda tarefa, inclusive as já `merged` — o próximo `integrate` vê essa tarefa como não-pronta (`blockedOn`) e o `start` dela morre na imutabilidade do prompt. O remédio do integrator ("Blocked vira tarefa nova") passa a valer **no próximo run**; num run vivo, tarefa nova se declara quando o run fecha, não se re-planifica no meio.
+4. Menores de precisão: rc 2 por tarefa desconhecida é do `start` (no `finish` é TypeError rc 1 — dizer `start`); o corpo da tarefa vai ao prompt **até 6000 chars** com `[corpo cortado]`; `gates/wave-<n>.json` é escrito em toda onda que chega à gate (sem `verify`: `build: null`, `ok: true` — o que exige `verify` é o `build`).
+
 - [ ] **Step 1: Escrever o teste que falha**
 
 ```js
