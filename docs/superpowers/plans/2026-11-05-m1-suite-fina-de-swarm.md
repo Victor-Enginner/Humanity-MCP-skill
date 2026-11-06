@@ -1841,12 +1841,15 @@ function cmdStart(o) {
   // RETRY (fix round Task 9, I1 do revisor — sem isto o `start --attempt N` do protocolo do
   // operador morria em `fatal: a branch ... already exists`): um `failed`/`timeout` deixa ref e
   // worktree de propósito (forense: gate.json e logs ficam), mas o re-corte precisa deles fora.
-  // removeWorktree + branch -D guardados: a forense do run vive em runs/<id>/tasks/, não na branch.
+  // `removeWorktree` INCONDICIONAL (round 2 da mesma revisão, I-residual): quem roda o
+  // `git worktree prune` é ele (lib/isolate.js:88-91) e o `existsSync` interno já é dele; gated
+  // por existsSync AQUI era o bug — se o humano apagou o diretório por fora a inscrição fica
+  // stale, o `branch -D` falha em silêncio ("used by worktree") e o prepare reedita o fatal.
+  // O mesmo padrão vale para `dropTask` e `cmdAbort`: chamar removeWorktree sem guard próprio.
   const estadoAtual = states.get(task.id) ?? 'planned';
   const branchAntiga = branchName(run.runId, task.id);
   if (['failed', 'timeout'].includes(estadoAtual)) {
-    const dirAntiga = worktreePath(o.run, task.id);
-    if (existsSync(dirAntiga)) removeWorktree({ repoDir: run.repoDir, dir: dirAntiga });
+    removeWorktree({ repoDir: run.repoDir, dir: worktreePath(o.run, task.id) });
     try { gitIn(run.repoDir, ['branch', '-D', branchAntiga]); } catch { /* sem ref: nada a limpar */ }
   }
   // Onda > 1 trabalha SOBRE o que a onda anterior entregou: o worktree sai do head da branch de
@@ -1981,7 +1984,9 @@ function cmdAbort(o) {
   const run = readRun(o.run);
   for (const t of tasksOf(o.run)) {
     const dir = worktreePath(o.run, t.id);
-    if (existsSync(dir)) removeWorktree({ repoDir: run.repoDir, dir });
+    // Sem guard existsSync aqui (round 2 Task 9): removeWorktree prunea a inscrição stale mesmo
+    // com o diretório apagado por fora, e o `branch -D` de baixo deixa de falhar em silencio.
+    removeWorktree({ repoDir: run.repoDir, dir });
     // `git worktree remove` NAO apaga a ref: sem isto, o `git branch` do humano acumula
     // uma linha swarm/<runId>/... por tarefa, por run. A refstore e compartilhada por
     // construcao do git, e limpar ela e obrigacao deste CLI, nao do worktree.
