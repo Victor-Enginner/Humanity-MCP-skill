@@ -2747,17 +2747,17 @@ git commit -m "swarm: dry run no libra com metricas de lote, colisao e custo de 
 
 - [ ] **Step 1: Pedir OK explícito para `git init` na pasta do produto**
 
-`git init` na pasta de um sistema que roda no andar 6 do ALETHE é ação em repositório de produto. **Não rode sem a resposta explícita do usuário.** Se aprovado:
+`git init` na pasta de um sistema que roda no andar 6 do ALETHE é ação em repositório de produto. **Não rode sem a resposta explícita do usuário.** OK CONCEDIDO em 2026-11-06 (AskUserQuestion): "Aprovo, sem os binários" — o `.gitignore` abaixo já reflete o escopo aprovado (exclui também `index (1).html` e `*.zip`, os 1,4MB de binário/backup que o brief original mandava confirmar):
 
 ```bash
 cd "O:/DEV/A JORNADA/PROJETOS/Trabalhos reais/dashboard"
 git init -q -b main
-printf 'runtime/\n*.sqlite\n__pycache__/\n' > .gitignore
+printf 'runtime/\n*.sqlite\n__pycache__/\nindex (1).html\n*.zip\n' > .gitignore
 git add -A && git -c user.email=swarm@test -c user.name=swarm commit -q -m "linha de partida: monitor Verde Fluxo"
 git log --oneline -1 && git status --porcelain | wc -l
 ```
 
-Expected: `git status --porcelain` vazio. Se o `index (1).html` (494KB) e o `.zip` do mapa entrarem no commit inicial, confirme antes — são 1,4MB de binário/backup.
+Expected: `git status --porcelain` vazio e NENHUM binário grande no commit inicial (`git show --stat`confere). O OK cobre só este init+commit local; nada de push, nada de publicar.
 
 - [ ] **Step 2: Plano com lotes no backend (o monólito HTML fica de fora de propósito)**
 
