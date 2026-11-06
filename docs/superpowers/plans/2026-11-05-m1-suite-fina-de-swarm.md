@@ -2437,7 +2437,7 @@ git commit -m "swarm: ponta a ponta de tres agentes com lote violado barrado"
 
 1. **Setup hermético (mesma régua da emenda edfad4a da Task 11).** O bloco `setup()` do Step 1 ganha as duas linhas de identidade repo-local logo após o `git init` (antes do commit `base` e antes do `cli(['init'])`, cujo pre-check lê `git config user.email`). O `-c` do helper `git()` NÃO chega ao subprocesso `run.js`.
 
-2. **Três testes NOVOS no `test/fault.test.js` (código abaixo, após os 5 do Step 1):**
+2. **Quatro testes NOVOS no `test/fault.test.js` (código abaixo, após os 5 do Step 1; o quarto prende o caso positivo da lista vazia — achado M-2 da review):**
 
 ```js
 test('tarefa running SEM pid gravado nao e crash: desconhecido nao e morto (carry Task 10, item i)', () => {
@@ -2471,15 +2471,25 @@ test('diff-real sem touched declarado reprova: TOUCHED-DONE-NOT-DECLARED', () =>
   assert.equal(r.ok, false, JSON.stringify(r));
   assert.match(JSON.stringify(r.findings), /TOUCHED-DONE-NOT-DECLARED/);
 });
+
+test('touched vazio com diff zero passa: lista vazia nao e mentira (prende o touchedList)', () => {
+  const s = setup();
+  cli(['start', '--run', s.runDir, '--task', 'T-01']);
+  writeFileSync(join(s.runDir, 'tasks', 'T-01', 'attempt-1', 'report.md'),
+    '## Summary\nnao havia o que fazer\n- touched: -\n- tokens: 0\n');
+  const r = JSON.parse(cli(['finish', '--run', s.runDir, '--task', 'T-01', '--rc', '0']));
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(latest(s.runDir, 'T-01').state, 'gated');
+});
 ```
 
 3. **Implementações exigidas (a ordem é teste primeiro, código depois):**
    - `crashedRuns` (lib/ledger.js): célula de `pid` vazia/não-numérica ⇒ **estado desconhecido, não morto** — a linha não entra em `crashed[]`; só entra pid numérico com `!isAlive(pid)`. É isto que derruba o falso positivo que a Task 10 documentou como ruído (run do meio de onda com `pid: null`).
    - `cmdFinish` (run.js), só no caminho `rc == 0` com report presente: compara o conjunto declarado em `- touched:` com o diff REAL já recomposto do git contra `attempt-N/base.txt`. Dois conjuntos de findings: arquivo declarado sem mudança ⇒ `TOUCHED-DECLARED-NOT-DONE` (um finding por arquivo, com `file`); arquivo mudado sem declaração ⇒ `TOUCHED-DONE-NOT-DECLARED`. Os findings entram o veredito da gate: divergência em qualquer sentido ⇒ `ok:false`, estado `failed` (D1 continua: exit 0, o JSON é o veredito). `- touched: -` significa lista VAZIA (compare com o parse de `depends_on: -`); se `lib/report.js` hoje nao trata o tracinho, tratar.
    - `lib/prompt.js`: reescrever o paragrafo do `touched` para o contrato FINAL (a coercão dos dois sentidos existe e reprova) e corrigir a frase de `prompt.js:78-80` ("Blocked vira tarefa nova na onda seguinte") — o que acontece de verdade: o `## Blocked` chega ao operador no JSON do `finish`, a tarefa fica `failed`/`gated` conforme o veredito, e quem abre tarefa nova e o humano no plano seguinte. Nada de prometer automato que o CLI nao roda.
-   - Sincronizar a documentação com o código novo (mesma derivada da Task 10, agora ao contrario): a frase do `touched` em `skills/swarm-worker/SKILL.md` passa a AFIRMAR a coercão, e a frase do `crashed[]` em `skills/swarm-orchestrator/SKILL.md` para de descrever o ruído (pid ausente não aparece mais). Rodar `node --test test/skills.test.js test/prompt.test.js` e atualizar os literais aprisionados na MESMA mudança — nenhum commit pode deixar skill e código divergidos.
+   - Sincronizar a documentação com o código novo (mesma derivada da Task 10, agora ao contrario): a frase do `touched` em `skills/swarm-worker/SKILL.md` passa a AFIRMAR a coercão, e a frase do `crashed[]` em `skills/swarm-orchestrator/SKILL.md` para de descrever o ruído (pid ausente não aparece mais). A lista NÃO é exaustiva: varredura `grep -rn` por touched/crashed/timeout/rc em `skills/` + `lib/prompt.js` inteira — inclui `skills/swarm-integrator/SKILL.md` (frase wave-only do `timeout` e máscara `--rc <0|1>`, que deve virar 0/124/outro-não-zero) e o passo 6 do orquestrador (`timeout` de TAREFA via `--rc 124` ≠ `timeout` de build de ONDA; as duas origens existem). Rodar `node --test test/skills.test.js test/prompt.test.js` e atualizar os literais aprisionados na MESMA mudança — nenhum commit pode deixar skill e código divergidos.
 
-4. **Correção do Step 2:** a expectativa "FAIL na primeira vez em `timeout` e `blockedOn`" está SUPERADA — a Task 9 já embarcou o mapeamento `rc 124 → timeout` (`run.js`) e o curto-circuito `blockedOn`/`build.timedOut` de `cmdIntegrate`. Os 5 testes do Step 1 nascem PASS (ruling D7 da Task 9, nascido verde de propósito). O TDD desta Task são os 3 testes NOVOS do item 2: eles sim falham antes das implementações dos itens 3.
+4. **Correção do Step 2 (contra-emenda 2026-11-06, prova do revisor da Task 12):** a emenda anterior MENTIU ao dizer que `rc 124 → timeout` já estava embarcado na Task 9 — `git log -S "rc === 124" -- run.js` mostra só `c333325`; o que a Task 9 embarcou foi o curto-circuito `blockedOn` e o `build.timedOut` da ONDA. O mapping do WORKER (`cmdFinish`) é trabalho DESTA Task — o Step 2 original e a regra 2 da Task 7 sempre disseram isso. Medição real: dos 5 testes do Step 1, **4 nascem PASS** (crash, abort, blockedOn, failed-rc2) e **`timeout` nasce FAIL**; os 3 novos do item 2 também nascem FAIL. TDD desta Task: 4 verdes / 4 vermelhos antes das implementações do item 3.
 
 - [ ] **Step 1: Escrever o teste**
 
@@ -2574,19 +2584,19 @@ test('worker que morre sem reportar fecha como failed com rc registrado', () => 
 - [ ] **Step 2: Rodar**
 
 Run: `node --test test/fault.test.js`
-Expected: os 5 testes do Step 1 nascem PASS (item 4 da emenda); os 3 testes NOVOS da emenda nascem FAIL — `run.js` ainda não trata a coercão nem o predicado novo. Implemente o item 3 da emenda (e, se algo aqui ainda falhar, o que jà estava especificado):
+Expected: 4 dos testes do Step 1 nascem PASS (crash, abort, blockedOn, failed-rc2); `timeout` nasce FAIL junto com os 4 NOVOS da emenda (item 4 contra-emendado). Implemente o item 3 da emenda:
   - em `cmdFinish`: `rc === 124 → estado 'timeout'`. Aqui o 124 é **convenção com quem despacha o worker** (o host devolve 124 quando mata o agente no tempo dele), não saída de `execSync` — a gate da onda não passa por aqui e usa o campo `timedOut`, porque lá o número sozinho não é confiável (ver Task 7, regra 2). Qualquer outro `rc != 0 → 'failed'`;
   - em `cmdIntegrate`: se a onda tem tarefa não `gated`, retorne `{ merged: [], conflicts: [], blockedOn: <primeiro id nao gated> }` sem tocar na branch de integração; se `build.timedOut`, registre a onda como `timeout` (já especificado na Task 9).
 
 - [ ] **Step 3: Rodar até passar**
 
 Run: `node --test test/fault.test.js`
-Expected: PASS (8 testes)
+Expected: PASS (9 testes)
 
 - [ ] **Step 4: Rodar a suíte inteira**
 
 Run: `node --test "test/"*.test.js`
-Expected: PASS em todos os arquivos (131 = 123 + os 8 de fault). Se `e2e` quebrar depois desta mudança, é sinal de que a coercão do `touched` pegou uma declaração divergente no teste da Task 11 — corrigir a DECLARAÇÃO do report no fixture do teste (ela é que estava mentindo), não relaxar a coercão. Vale a regra de sempre: relaxar o `integrate` para fazer verde esta PROIBIDO.
+Expected: PASS em todos os arquivos (132 = 123 + os 9 de fault). Se `e2e` quebrar depois desta mudança, é sinal de que a coercão do `touched` pegou uma declaração divergente no teste da Task 11 — corrigir a DECLARAÇÃO do report no fixture do teste (ela é que estava mentindo), não relaxar a coercão. Vale a regra de sempre: relaxar o `integrate` para fazer verde esta PROIBIDO.
 
 - [ ] **Step 5: Commit**
 
