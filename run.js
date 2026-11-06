@@ -388,7 +388,9 @@ function cmdAbort(o) {
       end: stamp(), branch: branchName(run.runId, t.id), log: null, tokens: null, pid: null });
   }
   const integ = integrationPath(o.run);
-  if (existsSync(integ)) removeWorktree({ repoDir: run.repoDir, dir: integ });
+  // Sem guard existeSync: removeWorktree e quem roda o prune (lib/isolate.js:88-91), e o guard
+  // interno dele ja cuida do dir ausente. Sync com o plano (1a71bcb), residual da round 2.
+  removeWorktree({ repoDir: run.repoDir, dir: integ });
   try { gitIn(run.repoDir, ['branch', '-D', `swarm/${run.runId}/integration`]); } catch { /* nunca existiu */ }
   out({ aborted: true });
   return 0;
