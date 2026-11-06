@@ -2325,6 +2325,11 @@ function swarmSetup() {
   writeFileSync(join(repoDir, 'components', 'header', '.gitkeep'), '');
   writeFileSync(join(repoDir, 'components', 'footer', '.gitkeep'), '');
   git(['init', '-q', '-b', 'main'], repoDir);
+  // Identidade repo-local (ruling I1 da Task 4): o `-c` do helper git() do teste NAO chega ao
+  // subprocesso run.js, e o `integrate` faz merge de verdade. Sem estas duas linhas o e2e
+  // dependeria da identidade global do host — a copia exata do padrao de run.test.js.
+  git(['config', 'user.email', 'swarm@test'], repoDir);
+  git(['config', 'user.name', 'swarm'], repoDir);
   git(['add', '.'], repoDir); git(['commit', '-q', '-m', 'base'], repoDir);
   const workspace = mkdtempSync(join(tmpdir(), 'swarm-e2e-ws-'));
   const meta = JSON.parse(cli(['init', '--repo', repoDir, '--workspace', workspace]));
