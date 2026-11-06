@@ -1,7 +1,7 @@
 // test/run.test.js
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -168,4 +168,136 @@ test('status tabula e abort derruba worktrees', () => {
   assert.equal(existsSync(a.workDir), false);
   assert.match(readFileSync(join(meta.runDir, 'status.tsv'), 'utf8'), /T-01\tdiscarded/);
   assert.equal(git(['branch', '--list', 'swarm/*'], repoDir).trim(), '');
+});
+
+// ---------------------------------------------------------------------------
+// Fix round da Task 9 (1eab369) — testes cobrindo I1 (retry vivo, task desconhecida,
+// prompt antes do prepare, base.txt por attempt) e I2 (gitIn mudo). O contrato do
+// `cli()` é o do `execFileSync`: rc != 0 LANÇA com `.status` (o código do CLI) e
+// `.stderr` (a mensagem); as recusas são assertadas aí, não no stdout.
+
+// `cliRaw` é o `cli()` sem a exceção: devolve {status, stdout, stderr} e existe só
+// para a I2 — vazar `fatal:` do git no stderr de um start/finish VERDE é invisível
+// pelo execFileSync que descarta stdout de sucesso; preciso ler o stderr cru.
+function cliRaw(args, cwd) {
+  const r = spawnSync(process.execPath, [join(import.meta.dirname, '..', 'run.js'), ...args],
+    { cwd, encoding: 'utf8' });
+  return { status: r.status, stdout: r.stdout.trim(), stderr: r.stderr };
+}
+
+test('start de tarefa com dependencia gated mas nao integrada recusa com codigo 2', () => {
+  const { repoDir, workspace } = setup();
+  const meta = JSON.parse(cli(['init', '--repo', repoDir, '--workspace', workspace]));
+  writeFileSync(join(workspace, 'plan.md'), PLAN);
+  cli(['plan', '--run', meta.runDir, '--file', join(workspace, 'plan.md')]);
+  // I2 na face verde: o start de onda 1 tentava `rev-parse --verify` numa ref que ainda
+  // nao existe e o finish tentava `merge-base` com ela — com stderr herdado, todo start
+  // e finish de onda 1 imprimia `fatal:` no stderr do CLI. Verde com barulho ainda e
+  // barulho: o dry run da Task 13 le stderr como sinal.
+  const s = cliRaw(['start', '--run', meta.runDir, '--task', 'T-01']);
+  assert.equal(s.status, 0, s.stderr);
+  assert.ok(!/fatal/.test(s.stderr), `gitIn vazou stderr do git no start de onda 1: ${s.stderr}`);
+  const out = JSON.parse(s.stdout);
+  writeFileSync(join(out.workDir, 'styles', 'tokens.css'), ':root { --bg: #fefefe; }\n');
+  git(['add', '.'], out.workDir); git(['commit', '-q', '-m', 'tokens'], out.workDir);
+  writeFileSync(join(meta.runDir, 'tasks', 'T-01', 'attempt-1', 'report.md'),
+    '## Summary\nok\n- touched: styles/tokens.css\n- tokens: 100\n');
+  const f = cliRaw(['finish', '--run', meta.runDir, '--task', 'T-01', '--rc', '0']);
+  assert.equal(f.status, 0, f.stderr);
+  assert.ok(!/fatal/.test(f.stderr), `gitIn vazou stderr do git no finish de onda 1: ${f.stderr}`);
+  assert.equal(JSON.parse(f.stdout).ok, true);
+  // T-01 esta `gated` — a barragem so abre com `merged`. O `start` de T-02 morre em rc 2.
+  assert.throws(() => cli(['start', '--run', meta.runDir, '--task', 'T-02']),
+    (e) => e.status === 2 && /rode integrate primeiro/.test(String(e.stderr)));
+  assert.equal(existsSync(join(meta.runDir, 'worktrees', 'T-02')), false);
+});
+
+test('retry vivo: start --attempt 2 apos gate de onda falho re-corta e sai 0 (I1)', () => {
+  const { repoDir, workspace } = setup();
+  const meta = JSON.parse(cli(['init', '--repo', repoDir, '--workspace', workspace]));
+  const failPlan = join(workspace, 'fail-plan.md');
+  writeFileSync(failPlan, `# plano
+## T-01 tokens
+- paths: styles/**
+- depends_on: -
+- verify: node -e "process.exit(1)"
+
+## T-02 cabecalho
+- paths: components/**
+- depends_on: T-01
+- verify: -
+`);
+  cli(['plan', '--run', meta.runDir, '--file', failPlan]);
+  const a = JSON.parse(cli(['start', '--run', meta.runDir, '--task', 'T-01']));
+  writeFileSync(join(a.workDir, 'styles', 'tokens.css'), ':root { --bg: #fefefe; }\n');
+  git(['add', '.'], a.workDir); git(['commit', '-q', '-m', 'tokens'], a.workDir);
+  writeFileSync(join(meta.runDir, 'tasks', 'T-01', 'attempt-1', 'report.md'),
+    '## Summary\nok\n- touched: styles/tokens.css\n- tokens: 100\n');
+  assert.equal(JSON.parse(cli(['finish', '--run', meta.runDir, '--task', 'T-01', '--rc', '0'])).ok, true);
+  const integ = JSON.parse(cli(['integrate', '--run', meta.runDir]));
+  assert.equal(integ.merged.length, 0, JSON.stringify(integ));
+  assert.match(readFileSync(join(meta.runDir, 'status.tsv'), 'utf8'), /T-01\tfailed/);
+  // forense deliberado do gate-fail: ref e worktree ficam — e exatamente o cenario em que
+  // o `start --attempt 2` do protocolo do operador morria em git fatal rc 1 (I1).
+  assert.match(git(['branch', '--list', 'swarm/*'], repoDir), /T-01/);
+  const r = JSON.parse(cli(['start', '--run', meta.runDir, '--task', 'T-01', '--attempt', '2']));
+  assert.equal(r.task, 'T-01');
+  assert.equal(r.attempt, 2);
+  assert.match(r.branch, /\/T-01$/);
+  assert.ok(existsSync(r.workDir));
+  assert.ok(existsSync(join(meta.runDir, 'tasks', 'T-01', 'attempt-2', 'prompt.md')));
+  // o re-corte partiu da head da integracao (pos-reset == base do run): base.txt diz isto
+  const base2 = readFileSync(join(meta.runDir, 'tasks', 'T-01', 'attempt-2', 'base.txt'), 'utf8').trim();
+  assert.equal(base2, git(['rev-parse', 'HEAD'], r.workDir));
+  // worktree vivo: escrever e commitar dentro dele funciona (o protocolo de falha completo e da Task 12)
+  writeFileSync(join(r.workDir, 'styles', 'novo.css'), '.n { gap: 4px; }\n');
+  git(['add', '.'], r.workDir); git(['commit', '-q', '-m', 'retry'], r.workDir);
+  assert.match(readFileSync(join(meta.runDir, 'status.tsv'), 'utf8'), /T-01\trunning/);
+});
+
+test('start persiste a base cortada em tasks/<id>/attempt-N/base.txt (I1 c)', () => {
+  const { repoDir, workspace } = setup();
+  const meta = JSON.parse(cli(['init', '--repo', repoDir, '--workspace', workspace]));
+  writeFileSync(join(workspace, 'plan.md'), PLAN);
+  cli(['plan', '--run', meta.runDir, '--file', join(workspace, 'plan.md')]);
+  const out = JSON.parse(cli(['start', '--run', meta.runDir, '--task', 'T-01']));
+  const baseFile = join(meta.runDir, 'tasks', 'T-01', 'attempt-1', 'base.txt');
+  assert.ok(existsSync(baseFile), 'cmdStart deve gravar a base do corte no attempt-dir');
+  const base = readFileSync(baseFile, 'utf8').trim();
+  // igual ao HEAD do worktree logo apos o start (sem commit do worker) — e na onda 1 e o
+  // baseSha do run por construcao; e isto, nao re-derivacao, que o finish diffar.
+  assert.equal(base, git(['rev-parse', 'HEAD'], out.workDir));
+  assert.equal(base, meta.baseSha);
+});
+
+test('start com --task que nao existe no plano e PlanError com codigo 2 (I1 a)', () => {
+  const { repoDir, workspace } = setup();
+  const meta = JSON.parse(cli(['init', '--repo', repoDir, '--workspace', workspace]));
+  writeFileSync(join(workspace, 'plan.md'), PLAN);
+  cli(['plan', '--run', meta.runDir, '--file', join(workspace, 'plan.md')]);
+  assert.throws(() => cli(['start', '--run', meta.runDir, '--task', 'T-99']),
+    (e) => e.status === 2 && /task nao existe no plano: T-99/.test(String(e.stderr)));
+  assert.equal(existsSync(join(meta.runDir, 'worktrees', 'T-99')), false);
+});
+
+test('prompt imutavel checado antes do prepare: recusa com use attempt 2 e sem worktree orfa (I1 b)', () => {
+  const { repoDir, workspace } = setup();
+  const meta = JSON.parse(cli(['init', '--repo', repoDir, '--workspace', workspace]));
+  writeFileSync(join(workspace, 'plan.md'), PLAN);
+  cli(['plan', '--run', meta.runDir, '--file', join(workspace, 'plan.md')]);
+  const a = JSON.parse(cli(['start', '--run', meta.runDir, '--task', 'T-01']));
+  // mesmo attempt, sem falha no meio: recusa rc 2 com a dica do attempt seguinte
+  assert.throws(() => cli(['start', '--run', meta.runDir, '--task', 'T-01']),
+    (e) => e.status === 2 && /use attempt 2/.test(String(e.stderr)));
+  // nenhum segundo start aconteceu: uma linha running so, e o worktree segue sendo o primeiro
+  const running = readFileSync(join(meta.runDir, 'status.tsv'), 'utf8')
+    .split(/\r?\n/).filter((l) => l.startsWith('T-01\trunning'));
+  assert.equal(running.length, 1);
+  assert.equal(a.workDir, join(meta.runDir, 'worktrees', 'T-01').replaceAll('\\', '/'));
+  // tarefa nova com prompt pre-criado: a checagem cai ANTES do prepare — dir ausente apos o throw
+  mkdirSync(join(meta.runDir, 'tasks', 'T-02', 'attempt-1'), { recursive: true });
+  writeFileSync(join(meta.runDir, 'tasks', 'T-02', 'attempt-1', 'prompt.md'), 'contrabando\n');
+  assert.throws(() => cli(['start', '--run', meta.runDir, '--task', 'T-02']),
+    (e) => e.status === 2 && /use attempt 2/.test(String(e.stderr)));
+  assert.equal(existsSync(join(meta.runDir, 'worktrees', 'T-02')), false);
 });
