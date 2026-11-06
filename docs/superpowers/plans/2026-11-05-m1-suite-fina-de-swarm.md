@@ -2116,7 +2116,9 @@ description: Planeja e conduz um swarm de ate 3 agentes editando um mesmo reposi
 # Swarm orchestrator
 
 Voce e o orquestrador. Voce NUNCA edita o produto: voce planeja, starta, le o ledger e integra.
-Toda escrita de estado vai pelo `run.js`. Voce e o unico autor do `status.tsv` (single-writer).
+Toda escrita de estado vai pelo `run.js` — só o CLI escreve `plan.md`/`waves.json`/`status.tsv`/`run.json`
+(single-writer, Global Constraints; você planeja e dispara comandos, a mão que grava é o CLI, nunca um
+editor seu no ledger). 
 
 ## Ciclo
 1. `node run.js init --repo <repo> --workspace <dir>` -> `runDir` no stdout.
@@ -2206,7 +2208,8 @@ O `integrate` já mergeou o que dava para mergear. Seu trabalho é o que sobra.
 2. Verifique coerência entre lotes: tokens definidos por uma tarefa e consumidos por outra,
    classes de componente criadas num lote e referenciadas noutro.
 3. Todo `## Blocked` vira proposta de tarefa nova na onda seguinte, com lote próprio.
-4. Rode `node run.js gate`/`integrate` de novo depois de corrigir, e só então declare a onda fechada.
+4. Rode `node run.js integrate` de novo depois de corrigir — a gate de onda roda dentro dele, não
+   existe comando `gate` — e só então declare a onda fechada.
 
 ## O que você não faz
 - Não resolve colisão sem reportar.
