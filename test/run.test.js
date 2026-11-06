@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { COMMANDS } from '../run.js';
@@ -300,4 +300,64 @@ test('prompt imutavel checado antes do prepare: recusa com use attempt 2 e sem w
   assert.throws(() => cli(['start', '--run', meta.runDir, '--task', 'T-02']),
     (e) => e.status === 2 && /use attempt 2/.test(String(e.stderr)));
   assert.equal(existsSync(join(meta.runDir, 'worktrees', 'T-02')), false);
+});
+
+// ---------------------------------------------------------------------------
+// Fix ROUND 2 da Task 9 (achado I-residual do re-review do round 1). O retry do `cmdStart`
+// chamava `removeWorktree` SO quando o diretorio do worktree existia. Quem roda o
+// `git worktree prune` e o `removeWorktree` (lib/isolate.js:88-91), entao com o DIR apagado por
+// fora (humano, explorer, antivírus) por um `failed`/`timeout` a inscricao fica stale: o
+// `branch -D` falha em silencio (`cannot delete branch ... used by worktree`) e o `prepare`
+// reedita `fatal: a branch named ... already exists` — a assinatura exata do I1 original, rc 1.
+
+test('retry com worktree APAGADO POR FORA: attempt 2 sai 0 com worktree novo (round 2)', () => {
+  const { repoDir, workspace } = setup();
+  const meta = JSON.parse(cli(['init', '--repo', repoDir, '--workspace', workspace]));
+  const failPlan = join(workspace, 'fail-plan.md');
+  writeFileSync(failPlan, `# plano
+## T-01 tokens
+- paths: styles/**
+- depends_on: -
+- verify: node -e "process.exit(1)"
+
+## T-02 cabecalho
+- paths: components/**
+- depends_on: T-01
+- verify: -
+`);
+  cli(['plan', '--run', meta.runDir, '--file', failPlan]);
+  const a = JSON.parse(cli(['start', '--run', meta.runDir, '--task', 'T-01']));
+  writeFileSync(join(a.workDir, 'styles', 'tokens.css'), ':root { --bg: #fefefe; }\n');
+  git(['add', '.'], a.workDir); git(['commit', '-q', '-m', 'tokens'], a.workDir);
+  writeFileSync(join(meta.runDir, 'tasks', 'T-01', 'attempt-1', 'report.md'),
+    '## Summary\nok\n- touched: styles/tokens.css\n- tokens: 100\n');
+  assert.equal(JSON.parse(cli(['finish', '--run', meta.runDir, '--task', 'T-01', '--rc', '0'])).ok, true);
+  const integ = JSON.parse(cli(['integrate', '--run', meta.runDir]));
+  assert.equal(integ.merged.length, 0, JSON.stringify(integ));
+  assert.match(readFileSync(join(meta.runDir, 'status.tsv'), 'utf8'), /T-01\tfailed/);
+
+  // O cenario: so o DIRETORIO morre — a inscricao do git worktree e a ref ficam (forense).
+  const dirAntiga = join(meta.runDir, 'worktrees', 'T-01');
+  rmSync(dirAntiga, { recursive: true, force: true });
+  assert.equal(existsSync(dirAntiga), false);
+  const wtStale = git(['worktree', 'list', '--porcelain'], repoDir);
+  assert.match(wtStale, /T-01/, 'a inscricao da worktree precisa continuar la (cenario real)');
+  assert.match(wtStale, /prunable/, 'sem inscricao stale nao ha cenario nenhum sendo testado');
+
+  // `start --attempt 2` tem de ser VERDE: removeWorktree incondicional prunea, o `branch -D`
+  // passa a pegar a ref e o prepare re-corta sem o fatal.
+  const r = cliRaw(['start', '--run', meta.runDir, '--task', 'T-01', '--attempt', '2']);
+  assert.equal(r.status, 0, `start attempt 2 morreu: rc=${r.status} stderr=${r.stderr}`);
+  assert.ok(!/already exists/.test(r.stderr), `fatal do I1 voltou: ${r.stderr}`);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.attempt, 2);
+  assert.ok(existsSync(out.workDir), 'o attempt 2 tem de sair com worktree fisicamente nova');
+  assert.equal(existsSync(join(meta.runDir, 'tasks', 'T-01', 'attempt-2', 'prompt.md')), true);
+  // inscricao limpa: nada prunable sobra no repo
+  assert.ok(!/prunable/.test(git(['worktree', 'list', '--porcelain'], repoDir)),
+    'o retry deixou inscricao stale no git worktree list');
+  // worktree vivo e util: o worker do attempt 2 consegue trabalhar e commitar nele
+  writeFileSync(join(out.workDir, 'styles', 'novo.css'), '.n { gap: 4px; }\n');
+  git(['add', '.'], out.workDir); git(['commit', '-q', '-m', 'retry round 2'], out.workDir);
+  assert.match(readFileSync(join(meta.runDir, 'status.tsv'), 'utf8'), /T-01\trunning/);
 });
