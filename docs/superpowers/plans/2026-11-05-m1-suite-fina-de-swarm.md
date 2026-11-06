@@ -1990,13 +1990,17 @@ function cmdAbort(o) {
     // `git worktree remove` NAO apaga a ref: sem isto, o `git branch` do humano acumula
     // uma linha swarm/<runId>/... por tarefa, por run. A refstore e compartilhada por
     // construcao do git, e limpar ela e obrigacao deste CLI, nao do worktree.
-    gitIn(run.repoDir, ['branch', '-D', branchName(run.runId, t.id)]);
+    // `branch -D` guardado (fix round 1 Task 9, D8 aprovado): abort logo depois de init/plan nao
+    // tem ref nenhuma, e sem o catch o comando do operador morria no meio do loop de limpeza.
+    try { gitIn(run.repoDir, ['branch', '-D', branchName(run.runId, t.id)]); } catch { /* nunca existiu */ }
     append(o.run, { task: t.id, state: 'discarded', rc: null, start: latest(o.run, t.id)?.start ?? null,
       end: stamp(), branch: branchName(run.runId, t.id), log: null, tokens: null, pid: null });
   }
   const integ = integrationPath(o.run);
-  if (existsSync(integ)) removeWorktree({ repoDir: run.repoDir, dir: integ });
-  gitIn(run.repoDir, ['branch', '-D', `swarm/${run.runId}/integration`]);
+  // Round 2 Task 9, mesmo raciocinio do retry: sem o prune incondicional aqui, uma integracao
+  // apagada por fora deixa inscricao stale e o `branch -D` de baixo falha em silencio.
+  removeWorktree({ repoDir: run.repoDir, dir: integ });
+  try { gitIn(run.repoDir, ['branch', '-D', `swarm/${run.runId}/integration`]); } catch { /* nunca existiu */ }
   out({ aborted: true });
   return 0;
 }
