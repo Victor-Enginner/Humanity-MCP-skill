@@ -2586,7 +2586,7 @@ Expected: PASS (8 testes)
 - [ ] **Step 4: Rodar a suíte inteira**
 
 Run: `node --test "test/"*.test.js`
-Expected: PASS em todos os arquivos (128). Se `e2e` quebrar depois desta mudança, é sinal de que a coercão do `touched` pegou uma declaração divergente no teste da Task 11 — corrigir a DECLARAÇÃO do report no fixture do teste (ela é que estava mentindo), não relaxar a coercão. Vale a regra de sempre: relaxar o `integrate` para fazer verde esta PROIBIDO.
+Expected: PASS em todos os arquivos (131 = 123 + os 8 de fault). Se `e2e` quebrar depois desta mudança, é sinal de que a coercão do `touched` pegou uma declaração divergente no teste da Task 11 — corrigir a DECLARAÇÃO do report no fixture do teste (ela é que estava mentindo), não relaxar a coercão. Vale a regra de sempre: relaxar o `integrate` para fazer verde esta PROIBIDO.
 
 - [ ] **Step 5: Commit**
 
