@@ -1798,14 +1798,20 @@ function attemptOf(runDir, taskId) {
 // `/F` e consome argumentos que eram para o git (o mesmo erro que a gate da Task 7 pagou para aprender).
 // Retorna stdout utf8 já trimado — os itens 1 e 2 abaixo leem SHA por aqui, e devolver o buffer cru ou
 // engolir a saída (o `stdio: 'ignore'` que o rascunho do `cmdAbort` trazia) quebra os dois caminhos.
+// `stdio: ['ignore','pipe','ignore']` (fix round da Task 9, I2 do revisor): os caminhos de catch
+// esperados — rev-parse --verify da ref de integração ANTES da onda 1, merge-base sem integração —
+// imprimem `fatal: Needed a single revision` no stderr do CLI em todo start/finish de onda 1. O
+// dry run da Task 13 lê stderr como sinal e um net zero falso custa mais que um git mudo.
 function gitIn(repoDir, args) {
-  return execFileSync('git', args, { cwd: repoDir, encoding: 'utf8', windowsHide: true }).trim();
+  return execFileSync('git', args, { cwd: repoDir, encoding: 'utf8', windowsHide: true,
+    stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 }
 
-// Base de diff de UMA tarefa: o commit onde a branch dela nasceu. Para onda 1 é o baseSha do run por
-// construção; para onda > 1 é o merge-base com a integração — que É o head da integração no momento do
-// `cmdStart`, porque o worktree foi cortado dele. Diffar tarefa de onda 2 contra `run.baseSha` mostraria
-// os arquivos da onda 1 como se o worker os tivesse tocado, e a gate reprovaria a tarefa certa.
+// Base de diff de UMA tarefa: o commit onde a branch dela nasceu. O VALOR ARMADO é o que `cmdStart`
+// persistiu em `attempt-N/base.txt` — re-derivar por merge-base é fallback para runs anteriores à
+// emenda, e tem uma janela falsa: depois que a branch da tarefa É a integração (merged, ref ainda
+// viva), merge-base devolve o tip da própria tarefa, o diff dá vazio, e a gate diria `ok:true,
+// touched:[]` de um trabalho inteiro. Sem integração nem base.txt (onda 1) cai no baseSha do run.
 function baseOf(repoDir, run, branch) {
   try {
     return gitIn(repoDir, ['merge-base', branch, `swarm/${run.runId}/integration`]);
@@ -1817,13 +1823,31 @@ function baseOf(repoDir, run, branch) {
 function cmdStart(o) {
   const run = readRun(o.run);
   const task = tasksOf(o.run).find((t) => t.id === o.task);
+  if (!task) throw new PlanError(`task nao existe no plano: ${o.task}`);
   const attempt = Number(o.attempt ?? 1);
+  // Prompt imutável é contrato (Task 8), e o worktree não pode nascer antes da checagem dele:
+  // um `start --attempt 1` repetido lançava dentro de writePrompt DEPOIS do prepare e deixava
+  // worktree órfã sem linha no ledger. (fix round Task 9, minor do revisor.)
+  if (existsSync(join(o.run, 'tasks', task.id, `attempt-${attempt}`, 'prompt.md'))) {
+    throw new PlanError(`prompt do attempt ${attempt} de ${task.id} ja existe — use attempt ${attempt + 1}`);
+  }
   // Barragem da spec (§ "Ledger como barragem": a onda seguinte só abre quando a atual passa na
   // gate) virada código, não instrução: tarefa com dependência não integrada não ganha worktree.
   const states = stateOf(o.run);
   const faltando = task.dependsOn.filter((d) => states.get(d) !== 'merged');
   if (faltando.length) {
     throw new PlanError(`${task.id}: depende de ${faltando.join(', ')} e nao esta liberada — rode integrate primeiro`);
+  }
+  // RETRY (fix round Task 9, I1 do revisor — sem isto o `start --attempt N` do protocolo do
+  // operador morria em `fatal: a branch ... already exists`): um `failed`/`timeout` deixa ref e
+  // worktree de propósito (forense: gate.json e logs ficam), mas o re-corte precisa deles fora.
+  // removeWorktree + branch -D guardados: a forense do run vive em runs/<id>/tasks/, não na branch.
+  const estadoAtual = states.get(task.id) ?? 'planned';
+  const branchAntiga = branchName(run.runId, task.id);
+  if (['failed', 'timeout'].includes(estadoAtual)) {
+    const dirAntiga = worktreePath(o.run, task.id);
+    if (existsSync(dirAntiga)) removeWorktree({ repoDir: run.repoDir, dir: dirAntiga });
+    try { gitIn(run.repoDir, ['branch', '-D', branchAntiga]); } catch { /* sem ref: nada a limpar */ }
   }
   // Onda > 1 trabalha SOBRE o que a onda anterior entregou: o worktree sai do head da branch de
   // integração, não do baseSha do run. Sem isto, `depends_on` não entrega nada ao worker além do
@@ -1834,6 +1858,11 @@ function cmdStart(o) {
   let baseSha = run.baseSha;
   try { baseSha = gitIn(run.repoDir, ['rev-parse', '--verify', integRef]); } catch { /* onda 1 */ }
   const { dir, branch } = prepare({ repoDir: run.repoDir, runDir: o.run, runId: run.runId, taskId: task.id, baseSha });
+  // A base do corte vai em arquivo ANTES do prompt: é o que `cmdFinish` diffa, e persistir aqui é
+  // o único momento em que o CLI sabe o valor por construção, sem re-derivar.
+  const attemptDir = join(o.run, 'tasks', task.id, `attempt-${attempt}`);
+  mkdirSync(attemptDir, { recursive: true });
+  writeFileSync(join(attemptDir, 'base.txt'), `${baseSha}\n`);
   const promptFile = writePrompt({
     runDir: o.run, taskId: task.id, attempt,
     text: renderPrompt({
@@ -1890,12 +1919,13 @@ function cmdFinish(o) {
   }
   // Consequência obrigatória da emenda do `cmdStart`: uma tarefa de onda > 1 NÃO sai do
   // `run.baseSha`, então diffar contra `run.baseSha` mostraria os arquivos da onda anterior como
-  // se o worker tivesse tocado neles — e a gate reprovaria a tarefa certa. A base de cada tarefa é
-  // o ponto onde a branch dela nasceu, que é exatamente o `merge-base` entre a branch da tarefa e a
-  // de integração; na onda 1 (integração ainda não existe) cai no baseSha do run, que é o valor
-  // correto por construção. As duas ordens de `finish` (antes e depois de um `integrate`) dão o
-  // mesmo resultado, porque baseSha é ancestral da integração por construção do `prepareIntegration`.
-  const files = touchedFiles({ workDir, baseSha: baseOf(run.repoDir, run, latest(o.run, task.id).branch) });
+  // se o worker tivesse tocado neles — e a gate reprovaria a tarefa certa. A base é o valor que o
+  // `cmdStart` cortou, gravado em `attempt-N/base.txt`; `baseOf` (merge-base) fica só como fallback
+  // para attempt iniciado antes desta emenda — re-derivar tem a janela falsa do comentário do
+  // `baseOf` (branch já dentro da integração → diff vazio → `ok:true` mentindo). (fix round Task 9.)
+  const baseFile = join(o.run, 'tasks', task.id, `attempt-${attempt}`, 'base.txt');
+  const baseSha = existsSync(baseFile) ? readFileSync(baseFile, 'utf8').trim() : baseOf(run.repoDir, run, latest(o.run, task.id).branch);
+  const files = touchedFiles({ workDir, baseSha });
   const scope = scopeCheck({ dirs: task.dirs, files });
   const { entries, tokenSource } = cssEntries(o, run, task, files);
   const gate = gateTask({ scope, cssEntries: entries });
@@ -2334,6 +2364,10 @@ test('o checkout do usuario nao foi tocado: mesmo HEAD e mesma branch', (t) => {
 test('sabotador que toca fora do lote e barrado e fica fora da integracao', () => {
   const s = swarmSetup();
   worker(s, 'T-01', { 'styles/tokens.css': ':root { --bg: oklch(0.99 0.002 260); }\n' });
+  // Emenda da barragem (fix round Task 9 / revisão): T-02 depende de T-01, entao sem o `integrate`
+  // aqui o `start` do sabotador morreria em PlanError rc 2 antes de qualquer gate — a barragem da
+  // dependencia nao e a barragem do lote, e este teste e sobre a do lote.
+  cli(['integrate', '--run', s.runDir]);
   const sab = worker(s, 'T-02', {
     'components/header/header.css': '.h { padding: 8px; }\n',
     'components/footer/footer.css': '.f { color: #ff0000; }\n',
@@ -2647,24 +2681,34 @@ Expected: `git status --porcelain` vazio. Se o `index (1).html` (494KB) e o `.zi
 - depends_on: -
 - verify: python -m unittest discover -s backend/tests -v
 
+Adaptadores de fonte (RSS, API, scraping): cada um expoe fetch() e health() no contrato que
+os testes de T-02 cobram. Sem mudanca de contrato — se o contrato atual nao fecha, ## Blocked
+dizendo qual metodo falta, porque o lote de testes e de outra tarefa.
+
 ## T-02 teste de contrato
 - paths: backend/tests/**
 - depends_on: -
 - verify: python -m unittest discover -s backend/tests -v
 
+Teste de contrato unico rodando sobre todos os adapters: mesmo nome de metodo, mesma assinatura,
+mesma saida de health(). E este teste que a gate de onda roda — se ele quebrar, a onda nao fecha.
+
 ## T-03 config das fontes
 - paths: config/**
 - depends_on: -
 - verify: -
+
+Registrador das fontes vivas com URL, tipo e intervalo. Nenhuma chave nova sem par no adapter —
+config e espelho do que existe, nao wishlist.
 ```
 
-Mesma regra da Task 13: lote de diretório termina em `/**`. Sem isso, `config` viraria `.` — a raiz do repositório inteiro, que `validateWaves` só aceita como lote solo.
+Mesma regra da Task 13: lote de diretório termina em `/**`. Sem isso, `config` viraria `.` — a raiz do repositório inteiro, que `validateWaves` só aceita como lote solo. E mesma emenda C3: os três corpos acima são a especificação que o worker recebe (`Task.body` → prompt); um plano sem corpo aqui mediria adivinhação, não swarm.
 
 Onde está o dente: T-01 e T-02 **não podem** ser na mesma onda se tocarem o mesmo contrato — é o teste honesto de que a declaração de lote obriga o planejador a pensar em posse. E o `verify` roda de verdade, sem `bun install`.
 
 - [ ] **Step 3: Rodar as duas ondas, integrar, medir**
 
-Sequência idêntica à Task 13 (steps 4-6), com os mesmos seis números, mais um:
+Sequência idêntica à Task 13 (steps 4→7, com o `integrate` da step 5 entre as ondas mesmo sem `depends_on` aqui — é a mesma máquina, não uma burocracia), com os mesmos seis números, mais um:
 
 | Mede | Por quê |
 |---|---|
