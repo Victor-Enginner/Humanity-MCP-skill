@@ -2427,10 +2427,59 @@ git commit -m "swarm: ponta a ponta de tres agentes com lote violado barrado"
 
 **Files:**
 - Create: `test/fault.test.js`
+- Modify (emenda do controlador, item 3): `run.js`, `lib/ledger.js`, `lib/report.js`, `lib/prompt.js`, `skills/swarm-worker/SKILL.md`, `skills/swarm-orchestrator/SKILL.md`, `test/prompt.test.js`/`test/skills.test.js` (literais aprisionados)
 
 **Interfaces:**
 - Consumes: `run.js`, `lib/ledger.js`, `lib/isolate.js`
 - Produces: nenhum produto
+
+**Emenda do controlador (carrego das Tasks 10 e 11, 2026-11-05) — esta Task é também a última correção de código do M1; o Step 1 sozinho não a completa:**
+
+1. **Setup hermético (mesma régua da emenda edfad4a da Task 11).** O bloco `setup()` do Step 1 ganha as duas linhas de identidade repo-local logo após o `git init` (antes do commit `base` e antes do `cli(['init'])`, cujo pre-check lê `git config user.email`). O `-c` do helper `git()` NÃO chega ao subprocesso `run.js`.
+
+2. **Três testes NOVOS no `test/fault.test.js` (código abaixo, após os 5 do Step 1):**
+
+```js
+test('tarefa running SEM pid gravado nao e crash: desconhecido nao e morto (carry Task 10, item i)', () => {
+  const s = setup();
+  cli(['start', '--run', s.runDir, '--task', 'T-01']);
+  assert.deepEqual(crashedRuns(s.runDir, () => false), []);
+  assert.match(cli(['status', '--run', s.runDir]), /T-01\s+running/);
+});
+
+test('touched declarado sem diff-real reprova: TOUCHED-DECLARED-NOT-DONE (carry Task 10, item ii)', () => {
+  const s = setup();
+  const a = JSON.parse(cli(['start', '--run', s.runDir, '--task', 'T-01']));
+  writeFileSync(join(a.workDir, 'styles', 'base.css'), 'body { padding: 4px; }\n');
+  git(['add', '.'], a.workDir); git(['commit', '-q', '-m', 'deimei'], a.workDir);
+  writeFileSync(join(s.runDir, 'tasks', 'T-01', 'attempt-1', 'report.md'),
+    '## Summary\ndei de menos\n- touched: styles/base.css, styles/ghost.css\n- tokens: 10\n');
+  const r = JSON.parse(cli(['finish', '--run', s.runDir, '--task', 'T-01', '--rc', '0']));
+  assert.equal(r.ok, false, JSON.stringify(r));
+  assert.match(JSON.stringify(r.findings), /TOUCHED-DECLARED-NOT-DONE/);
+  assert.equal(latest(s.runDir, 'T-01').state, 'failed');
+});
+
+test('diff-real sem touched declarado reprova: TOUCHED-DONE-NOT-DECLARED', () => {
+  const s = setup();
+  const a = JSON.parse(cli(['start', '--run', s.runDir, '--task', 'T-01']));
+  writeFileSync(join(a.workDir, 'styles', 'base.css'), 'body { padding: 4px; }\n');
+  git(['add', '.'], a.workDir); git(['commit', '-q', '-m', 'escondi'], a.workDir);
+  writeFileSync(join(s.runDir, 'tasks', 'T-01', 'attempt-1', 'report.md'),
+    '## Summary\nnao declarei nada\n- touched: -\n- tokens: 10\n');
+  const r = JSON.parse(cli(['finish', '--run', s.runDir, '--task', 'T-01', '--rc', '0']));
+  assert.equal(r.ok, false, JSON.stringify(r));
+  assert.match(JSON.stringify(r.findings), /TOUCHED-DONE-NOT-DECLARED/);
+});
+```
+
+3. **Implementações exigidas (a ordem é teste primeiro, código depois):**
+   - `crashedRuns` (lib/ledger.js): célula de `pid` vazia/não-numérica ⇒ **estado desconhecido, não morto** — a linha não entra em `crashed[]`; só entra pid numérico com `!isAlive(pid)`. É isto que derruba o falso positivo que a Task 10 documentou como ruído (run do meio de onda com `pid: null`).
+   - `cmdFinish` (run.js), só no caminho `rc == 0` com report presente: compara o conjunto declarado em `- touched:` com o diff REAL já recomposto do git contra `attempt-N/base.txt`. Dois conjuntos de findings: arquivo declarado sem mudança ⇒ `TOUCHED-DECLARED-NOT-DONE` (um finding por arquivo, com `file`); arquivo mudado sem declaração ⇒ `TOUCHED-DONE-NOT-DECLARED`. Os findings entram o veredito da gate: divergência em qualquer sentido ⇒ `ok:false`, estado `failed` (D1 continua: exit 0, o JSON é o veredito). `- touched: -` significa lista VAZIA (compare com o parse de `depends_on: -`); se `lib/report.js` hoje nao trata o tracinho, tratar.
+   - `lib/prompt.js`: reescrever o paragrafo do `touched` para o contrato FINAL (a coercão dos dois sentidos existe e reprova) e corrigir a frase de `prompt.js:78-80` ("Blocked vira tarefa nova na onda seguinte") — o que acontece de verdade: o `## Blocked` chega ao operador no JSON do `finish`, a tarefa fica `failed`/`gated` conforme o veredito, e quem abre tarefa nova e o humano no plano seguinte. Nada de prometer automato que o CLI nao roda.
+   - Sincronizar a documentação com o código novo (mesma derivada da Task 10, agora ao contrario): a frase do `touched` em `skills/swarm-worker/SKILL.md` passa a AFIRMAR a coercão, e a frase do `crashed[]` em `skills/swarm-orchestrator/SKILL.md` para de descrever o ruído (pid ausente não aparece mais). Rodar `node --test test/skills.test.js test/prompt.test.js` e atualizar os literais aprisionados na MESMA mudança — nenhum commit pode deixar skill e código divergidos.
+
+4. **Correção do Step 2:** a expectativa "FAIL na primeira vez em `timeout` e `blockedOn`" está SUPERADA — a Task 9 já embarcou o mapeamento `rc 124 → timeout` (`run.js`) e o curto-circuito `blockedOn`/`build.timedOut` de `cmdIntegrate`. Os 5 testes do Step 1 nascem PASS (ruling D7 da Task 9, nascido verde de propósito). O TDD desta Task são os 3 testes NOVOS do item 2: eles sim falham antes das implementações dos itens 3.
 
 - [ ] **Step 1: Escrever o teste**
 
@@ -2454,6 +2503,10 @@ function setup() {
   cpSync(join(import.meta.dirname, 'fixtures', 'site'), repoDir, { recursive: true });
   mkdirSync(join(repoDir, 'styles'), { recursive: true });
   git(['init', '-q', '-b', 'main'], repoDir);
+  // Identidade repo-local (ruling I1 da Task 4; emenda edfad4a): o `-c` do helper git() NAO
+  // chega ao subprocesso run.js, e o pre-check do cmdInit le a config do repo.
+  git(['config', 'user.email', 'swarm@test'], repoDir);
+  git(['config', 'user.name', 'swarm'], repoDir);
   git(['add', '.'], repoDir); git(['commit', '-q', '-m', 'base'], repoDir);
   const workspace = mkdtempSync(join(tmpdir(), 'swarm-fault-ws-'));
   const meta = JSON.parse(cli(['init', '--repo', repoDir, '--workspace', workspace]));
@@ -2521,24 +2574,24 @@ test('worker que morre sem reportar fecha como failed com rc registrado', () => 
 - [ ] **Step 2: Rodar**
 
 Run: `node --test test/fault.test.js`
-Expected: FAIL na primeira vez em `timeout` e `blockedOn` — `run.js` ainda não trata `--rc 124` nem devolve `blockedOn`. Implemente:
+Expected: os 5 testes do Step 1 nascem PASS (item 4 da emenda); os 3 testes NOVOS da emenda nascem FAIL — `run.js` ainda não trata a coercão nem o predicado novo. Implemente o item 3 da emenda (e, se algo aqui ainda falhar, o que jà estava especificado):
   - em `cmdFinish`: `rc === 124 → estado 'timeout'`. Aqui o 124 é **convenção com quem despacha o worker** (o host devolve 124 quando mata o agente no tempo dele), não saída de `execSync` — a gate da onda não passa por aqui e usa o campo `timedOut`, porque lá o número sozinho não é confiável (ver Task 7, regra 2). Qualquer outro `rc != 0 → 'failed'`;
   - em `cmdIntegrate`: se a onda tem tarefa não `gated`, retorne `{ merged: [], conflicts: [], blockedOn: <primeiro id nao gated> }` sem tocar na branch de integração; se `build.timedOut`, registre a onda como `timeout` (já especificado na Task 9).
 
 - [ ] **Step 3: Rodar até passar**
 
 Run: `node --test test/fault.test.js`
-Expected: PASS (5 testes)
+Expected: PASS (8 testes)
 
 - [ ] **Step 4: Rodar a suíte inteira**
 
-Run: `node --test "test/**/*.test.js"`
-Expected: PASS em todos os arquivos. Se `e2e` quebrar depois desta mudança, é sinal de que o `integrate` ficou mais rígido do que o teste da Task 11 esperava — ajustar o **teste da Task 11** para integrar uma onda completa, não relaxar o `integrate`.
+Run: `node --test "test/"*.test.js`
+Expected: PASS em todos os arquivos (128). Se `e2e` quebrar depois desta mudança, é sinal de que a coercão do `touched` pegou uma declaração divergente no teste da Task 11 — corrigir a DECLARAÇÃO do report no fixture do teste (ela é que estava mentindo), não relaxar a coercão. Vale a regra de sempre: relaxar o `integrate` para fazer verde esta PROIBIDO.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add test/fault.test.js run.js lib/gate.js
+git add test/fault.test.js run.js lib/gate.js lib/ledger.js lib/report.js lib/prompt.js test/prompt.test.js skills/
 git commit -m "swarm: timeout, crash e ausencia de merge parcial viram estado no ledger"
 ```
 
