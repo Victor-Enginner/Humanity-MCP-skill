@@ -4,7 +4,7 @@
 // do M1 — o dispatcher é o host, o dono do estado é este CLI.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parsePlan, computeWaves, validateWaves, PlanError } from './lib/plan.js';
 import { createLedger, append, rows, latest, stateOf, crashedRuns, stamp } from './lib/ledger.js';
@@ -429,6 +429,11 @@ export async function main(argv) {
   const [cmd, ...rest] = argv;
   if (!COMMANDS.includes(cmd)) throw new PlanError(`comando desconhecido: ${cmd} (use ${COMMANDS.join('|')})`);
   const o = opts(rest);
+  // B-1 (dry run da Task 13): `--run runs/<id>` relativo fazia o `git worktree add` (cwd = repo
+  // alvo) criar o worktree DENTRO do produto, enquanto o prompt prometia o workspace. Caminhos
+  // absolutos na fronteira valem para todo comando — repo/workspace tambem sao passados a git/fs
+  // cujo cwd nao e o do operador.
+  for (const k of ['run', 'repo', 'workspace']) if (o[k]) o[k] = resolve(o[k]);
   const table = { init: cmdInit, plan: cmdPlan, start: cmdStart, finish: cmdFinish,
     integrate: cmdIntegrate, status: cmdStatus, abort: cmdAbort };
   return table[cmd](o);

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { cpSync, mkdirSync, readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { COMMANDS } from '../run.js';
 
 const G = ['-c', 'user.email=swarm@test', '-c', 'user.name=swarm'];
@@ -123,3 +123,15 @@ test('sabotador que toca fora do lote e barrado e fica fora da integracao', () =
 });
 
 const existsOk = (p) => { try { readFileSync(p); return true; } catch { return false; } };
+
+test('--run relativo: worktree nasce no workspace, nao dentro do repo alvo (emenda B-1 da Task 13)', () => {
+  const s = swarmSetup();
+  // O dry run do libra dirigiu o CLI com `--run runs/<id>` a partir do workspace: o `git worktree
+  // add` do isolate resolve caminho relativo contra o cwd do repo ALVO, e o worktree nasceu dentro
+  // do produto enquanto o prompt prometia o workspace. Todo setup desta suite usa runDir absoluto
+  // (mkdtemp), por isso os 132 testes nao pegaram — este dirige o CLI do jeito que o plano manda.
+  const w = JSON.parse(cli(['start', '--run', join('runs', s.runId), '--task', 'T-01'], s.workspace));
+  assert.equal(isAbsolute(w.workDir), true, JSON.stringify(w));
+  assert.ok(existsOk(join(s.workspace, 'runs', s.runId, 'worktrees', 'T-01', 'styles', 'tokens.css')));
+  assert.equal(existsOk(join(s.repoDir, 'runs', s.runId, 'worktrees', 'T-01', 'styles', 'tokens.css')), false);
+});

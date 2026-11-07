@@ -2615,6 +2615,8 @@ git commit -m "swarm: timeout, crash e ausencia de merge parcial viram estado no
 **Interfaces:**
 - Consumes: CLI + skills dos passos anteriores. Repo alvo: `O:/DEV/A JORNADA/PROJETOS/libra` (árvore limpa verificado em 2026-11-05; **sem `node_modules` instalado**, `bun 1.4.2` presente).
 
+**Emenda B-1 (2026-11-06, medida na tentativa 1).** O run `20261106-fb0f` falhou na onda 1: o worker de T-02 reportou `## Blocked` porque o worktree prometido não existia no workspace — `git worktree add` recebe o caminho relativo de `--run` com cwd no repo alvo (`lib/isolate.js`, `add()`), então o worktree nasceu DENTRO do libra. O orquestrador abortou (libra intacto: HEAD 454e5c4, zero branches/worktrees); o humano mandou parar o agente de background e o controlador assumiu em primeiro plano. Reproduzido em repo temporário. Os 132 testes não pegaram porque todo setup usa workspace absoluto (`mkdtempSync`). Correção obrigatória ANTES de re-rodar os steps abaixo: (a) `main()` normaliza `--run` para absoluto na fronteira do CLI; (b) teste e2e novo dirige o CLI com `--run` relativo a partir do cwd do workspace e afirma que o worktree nasce no workspace (não no repo) e que `workDir` devolvido é absoluto — nasce FAIL, passa com o fix. A tentativa 1 entra no `docs/dry-run-libra.md` como linha de falha medida, não como nota de rodapé.
+
 - [ ] **Step 1: Preflight (sem escrever nada)**
 
 ```bash
