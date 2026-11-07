@@ -6,6 +6,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initRun, readRun } from '../lib/meta.js';
+import { PlanError } from '../lib/plan.js';
 import { prepare, touchedFiles, prepareIntegration, mergeInOrder, removeWorktree, branchName } from '../lib/isolate.js';
 import { ownsFile } from '../lib/paths.js';
 
@@ -38,6 +39,33 @@ test('initRun grava run.json com o sha base', () => {
   assert.equal(meta.baseSha, git(['rev-parse', 'HEAD'], repoDir));
   assert.ok(existsSync(join(meta.runDir, 'run.json')));
   assert.equal(readRun(meta.runDir).runId, meta.runId);
+});
+
+// Colisao de runId (review final do branch): date + 4 hex colide no mesmo dia, e o initRun gravava
+// run.json ANTES do refuse-recreate do createLedger (run.js) — o run vivo perdia o baseSha dele em
+// silencio e a guarda so reclamava do ledger. `uuid` e seam de TESTE (campo opcional, default
+// randomUUID): sem ele a colisao seria 1/65536 e nenhum teste a esperaria acontecer.
+test('initRun recusa runId colidido sem sobrescrever o run.json do run vivo', () => {
+  const repoDir = makeRepo();
+  const workspaceRoot = newRun();
+  const uuid = () => 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const primeiro = initRun({ workspaceRoot, repoDir, uuid });
+  const runJson = join(primeiro.runDir, 'run.json');
+  const antes = readFileSync(runJson, 'utf8');
+  // O repo ANDOU entre as duas chamadas: e o dano real da colisao, nao um byte qualquer — quem
+  // reescreve troca o baseSha do run vivo pelo head novo. Sem isto a compara de bytes seria vacua
+  // quando as duas chamadas caem no mesmo segundo (o stamp() so tem resolucao de segundo).
+  writeFileSync(join(repoDir, 'index.html'), '<h1>o repo andou</h1>\n');
+  git(['add', '.'], repoDir); git(['commit', '-q', '-m', 'depois do run'], repoDir);
+  // Ordem deliberada: primeiro o DANO, depois a recusa — com o bug a segunda chamada sobrescreve
+  // e o que falha aqui e a compara de bytes, nao o throws.
+  let recusou = null;
+  try { initRun({ workspaceRoot, repoDir, uuid }); } catch (e) { recusou = e; }
+  assert.equal(readFileSync(runJson, 'utf8'), antes, 'initRun colidiu e sobrescreveu o run.json do run vivo');
+  assert.equal(readRun(primeiro.runDir).baseSha, primeiro.baseSha);
+  assert.ok(recusou instanceof PlanError, `colisao de runId tem de recusar com PlanError; veio: ${recusou}`);
+  assert.match(recusou.message, /colidiu/);
+  assert.match(recusou.message, /tente de novo/);
 });
 
 test('prepare cria worktree em branch propria e nao mexe no HEAD do usuario', () => {

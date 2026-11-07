@@ -56,6 +56,24 @@ test('init cria runs/<id>/ com run.json', () => {
   assert.equal(meta.baseSha, git(['rev-parse', 'HEAD'], repoDir));
 });
 
+test('init recusa rc 2 com email presente e user.name ausente, sem criar runs/', () => {
+  const { repoDir, workspace } = setup();
+  // O global do host TEM user.name: sem GIT_CONFIG_GLOBAL/SYSTEM apontando para arquivo vazio, o
+  // `--unset` local cairia no global e o teste voltaria a depender da maquina — o vicio que o
+  // setup() acima paga para evitar. Aqui o cenario e o do operador: email configurado, nome nao.
+  git(['config', '--unset', 'user.name'], repoDir);
+  const vazio = join(workspace, 'gitconfig-vazio');
+  writeFileSync(vazio, '');
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: vazio, GIT_CONFIG_SYSTEM: vazio };
+  // A identidade do merge tem DUAS metades: email sozinho passava no init e morria rc 128 no
+  // meio do run, tarde demais para o operador entender o que houve.
+  assert.throws(() => execFileSync(process.execPath,
+    [join(import.meta.dirname, '..', 'run.js'), 'init', '--repo', repoDir, '--workspace', workspace],
+    { cwd: workspace, encoding: 'utf8', env }),
+    (e) => e.status === 2 && /user\.name/.test(String(e.stderr)));
+  assert.equal(existsSync(join(workspace, 'runs')), false);
+});
+
 test('plan valida, grava waves.json e povoa o ledger', () => {
   const { repoDir, workspace } = setup();
   const meta = JSON.parse(cli(['init', '--repo', repoDir, '--workspace', workspace]));

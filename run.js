@@ -39,11 +39,17 @@ function cmdInit(o) {
   // Pre-checar a identidade do humano (carry-in da Task 4, item i): `integrate` faz merge de
   // produção na worktree de integração, e merge sem identidade morre rc 128 no meio de um run —
   // tarde demais para o operador entender o que houve. Checar aqui, no único momento em que
-  // recusar ainda é barato: `git config user.email` resolve repo-local e global, na ordem do git.
+  // recusar ainda é barato: `git config user.email` e `user.name` resolvem repo-local e global, na
+  // ordem do git — as DUAS metades, porque email sozinho também morre rc 128 no merge.
   let email = '';
   try { email = gitIn(o.repo, ['config', 'user.email']); } catch { email = ''; }
   if (!email) {
     throw new PlanError('git config user.email ausente: o merge de producao exige a identidade do humano — configure-a antes de rodar init');
+  }
+  let name = '';
+  try { name = gitIn(o.repo, ['config', 'user.name']); } catch { name = ''; }
+  if (!name) {
+    throw new PlanError('git config user.name ausente: o merge de producao exige a identidade do humano — configure-a antes de rodar init');
   }
   const meta = initRun({ workspaceRoot: o.workspace, repoDir: o.repo });
   createLedger(meta.runDir);
@@ -397,6 +403,7 @@ function cmdStatus(o) {
   const width = 8;
   const text = lines.map((r) => `${r.task.padEnd(width)} ${r.state.padEnd(10)} ${r.tokens || ''}`.trimEnd()).join('\n');
   process.stdout.write(text + '\n');
+  // Placeholder de M2: toda linha de M1 grava pid:null e o crashedRuns curto-circuita antes daqui — troque quando o pid tracking chegar, ou processo morto vira falso negativo.
   const dead = crashedRuns(o.run, (pid) => pid !== 0 && existsSync(join(o.run, 'worktrees')));
   if (dead.length) out({ crashed: dead.map((r) => r.task) });
   return 0;

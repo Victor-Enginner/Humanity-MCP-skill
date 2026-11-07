@@ -83,7 +83,7 @@ test('writePrompt grava e recusa sobrescrever prompt existente', () => {
 // Os seis acima sao do brief. Os dois abaixo existem porque o prompt e a unica coisa que um
 // worker morto le: `run.js` (Task 9) reabre `tasks/<id>/attempt-N/prompt.md` para saber exatamente
 // o que foi dito. Isso so vale se o texto for funcao pura das entradas e se o contrato em INGLES
-// continuar literal — `parseReport` (lib/report.js:11-14) casa essas quatro strings NO TOPO DA
+// continuar literal — `parseReport` (lib/report.js:16-19) casa essas quatro strings NO TOPO DA
 // LINHA (flag m, sem recuo); traduzir uma, trocar o hifen por dois pontos, ou recuar o exemplo
 // dentro de um bloco faz o bloqueio do worker sumir em silencio no finish.
 test('o contrato do parseReport inteiro esta no prompt, literal e comecando a linha', () => {
