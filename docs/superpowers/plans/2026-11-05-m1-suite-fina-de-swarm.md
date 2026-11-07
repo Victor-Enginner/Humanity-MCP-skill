@@ -2747,6 +2747,21 @@ git commit -m "swarm: dry run no libra com metricas de lote, colisao e custo de 
 **Interfaces:**
 - Consumes: CLI. Repo alvo: `O:/DEV/A JORNADA/PROJETOS/Trabalhos reais/dashboard` — Python 3.11, stdlib + SQLite, `python -m unittest discover -s backend/tests -v`, `ruff`. **Não é repositório git hoje.**
 
+**Emenda V-1 (2026-11-07, preflight medido).** A premissa "não é repositório git hoje" caiu: o humano
+já criou o repo (6 commits, main em eda56e2, árvore limpa, identidade shoponsup@gmail.com,
+longpaths=true) e os binários `index (1).html` + `.zip` JÁ estão trackeados. OK do humano
+(AskUserQuestion 2026-11-07): **"Usar como está"** — Step 1 (git init) fica SEM EFEITO; nenhum
+commit novo no produto antes do dry run, nenhuma reescrita de histórico, binários ficam. Python
+do host é 3.12.10 (projeto exige >=3.11, fecha); `ruff` ausente → instalado 0.17.4 com OK explícito
+(`pip install --user`). Testes usam tempfile (baseline pode rodar em worktree sem tocar runtime/).
+
+**Emenda V-2 (ondas).** O markdown abaixo declara `depends_on: -` nos três lotes, mas o Step 3 manda
+"rodar as duas ondas" e o dente diz que T-01/T-02 não podem partilhar onda se tocam o mesmo contrato.
+Com tudo `-`, `computeWaves` devolveria UMA onda — contradição interna do brief. Ruling do
+controlador: o plano executado declara `T-02 depends_on: T-01` (o teste de contrato consome os
+adapters; é a posse do contrato que separa as ondas), ondas `[[T-01,T-03],[T-02]]`. O corpo dos
+três lotes permanece exatamente como abaixo.
+
 - [ ] **Step 1: Pedir OK explícito para `git init` na pasta do produto**
 
 `git init` na pasta de um sistema que roda no andar 6 do ALETHE é ação em repositório de produto. **Não rode sem a resposta explícita do usuário.** OK CONCEDIDO em 2026-11-06 (AskUserQuestion): "Aprovo, sem os binários" — o `.gitignore` abaixo já reflete o escopo aprovado (exclui também `index (1).html` e `*.zip`, os 1,4MB de binário/backup que o brief original mandava confirmar):
