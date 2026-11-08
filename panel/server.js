@@ -163,7 +163,7 @@ export async function createPanelServer({ runDir, port = 4180, host = '127.0.0.1
   };
 }
 
-function main(argv) {
+async function main(argv) {
   const o = { run: null, port: 4180 };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--run') o.run = argv[++i];

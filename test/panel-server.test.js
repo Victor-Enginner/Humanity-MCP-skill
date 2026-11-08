@@ -168,3 +168,27 @@ test('run invalido recusa com PanelBootError; CLI rc 2', async () => {
     assert.match(e.stderr, /run inválido/);
   } finally { f.cleanup(); }
 });
+
+test('CLI erro de argumento (sync) sai rc 2 com stderr limpo, sem stack trace', () => {
+  // Regressao do finding Important: main() plain lancava sincronamente antes de
+  // retornar promise, escapando do .catch -> rc 1 + stack trace. Com async main,
+  // todo throw vira rejeicao pega pelo .catch -> mensagem limpa no stderr + rc 2.
+  // Remover `async` de main faz este teste falhar (rc 1, stack trace).
+  const cases = [
+    { args: [], re: /uso:/ },
+    { args: ['--bogus'], re: /argumento desconhecido/ },
+    { args: ['--run', 'x', '--port', '99999'], re: /porta inválida/ },
+  ];
+  for (const { args, re } of cases) {
+    let err = null;
+    try {
+      execFileSync('node', [SERVER_JS, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) { err = e; }
+    const ctx = `args=${JSON.stringify(args)}`;
+    assert.ok(err, `CLI devia ter lancou (rc!=0): ${ctx}`);
+    assert.equal(err.status, 2, `${ctx} rc=${err.status}`);
+    assert.ok(err.stderr && err.stderr.trim().length > 0, `stderr vazio: ${ctx}`);
+    assert.match(err.stderr, re, ctx);
+    assert.doesNotMatch(err.stderr, /\n\s+at /, `stack trace no stderr: ${ctx}`);
+  }
+});
