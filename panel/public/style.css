@@ -1,0 +1,69 @@
+/* painel espectador — tema escuro de editor, cursores coloridos por lote */
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: #14161a; color: #d7dae0;
+  font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
+  display: flex; flex-direction: column; height: 100vh;
+}
+#topo {
+  display: flex; gap: 12px; align-items: center; padding: 8px 14px;
+  background: #1c1f26; border-bottom: 1px solid #2a2e37;
+}
+#run-id { color: #9aa9ff; }
+#base-sha { color: #7a828f; font-family: Consolas, monospace; }
+.badge { padding: 1px 8px; border-radius: 8px; background: #333; font-size: 12px; }
+.badge.ok { background: #1d4d2e; color: #7fe0a0; }
+.badge.falhou { background: #5a2222; color: #ff9c9c; }
+.oculto { display: none !important; }
+#layout { display: flex; flex: 1; min-height: 0; }
+#lateral { width: 280px; overflow-y: auto; border-right: 1px solid #2a2e37; padding: 8px; }
+#lateral h2 { font-size: 12px; text-transform: uppercase; color: #7a828f; margin: 4px 0 8px; }
+#arvore { list-style: none; margin: 0; padding: 0; }
+.arquivo {
+  padding: 3px 6px; border-radius: 4px; cursor: pointer;
+  font: 12px/1.5 Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.arquivo:hover { background: #232730; }
+.arquivo.aberto { background: #2a3040; }
+.dono-badge {
+  margin-left: 6px; padding: 0 5px; border-radius: 6px;
+  color: #10131a; font-size: 10px; font-weight: 700;
+}
+#editor { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#arquivo-barra {
+  display: flex; gap: 10px; align-items: center; padding: 6px 12px;
+  background: #1c1f26; border-bottom: 1px solid #2a2e37; font-family: Consolas, monospace; font-size: 12px;
+}
+#viewer-wrap { position: relative; flex: 1; overflow: auto; }
+#viewer {
+  margin: 0; padding: 10px 12px 10px 52px; counter-reset: linha;
+  font: 13px/1.5 Consolas, "Cascadia Mono", monospace; min-height: 100%;
+}
+.linha { position: relative; white-space: pre; min-height: 1.5em; }
+.linha::before {
+  counter-increment: linha; content: counter(linha);
+  position: absolute; left: -40px; width: 28px; text-align: right; color: #4a505c;
+}
+#cursor {
+  position: absolute; left: 48px; width: 2px; height: 1.5em;
+  animation: pisca 1s steps(1) infinite;
+}
+#cursor-nome {
+  position: absolute; top: -16px; left: -2px; padding: 0 5px;
+  color: #10131a; font: 700 10px/1.5 "Segoe UI", sans-serif; border-radius: 3px 3px 3px 0;
+  animation: none;
+}
+@keyframes pisca { 50% { opacity: 0.35; } }
+#marcador { padding: 6px 12px; color: #e8a33d; font: 12px Consolas, monospace; }
+#faixa {
+  display: flex; gap: 16px; padding: 8px 14px; overflow-x: auto;
+  background: #1c1f26; border-top: 1px solid #2a2e37; font-size: 12px;
+}
+.onda { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+.task-chip { padding: 1px 7px; border: 1px solid; border-radius: 8px; font-family: Consolas, monospace; }
+.estado-running { background: #233048; }
+.estado-merged { background: #1d3a28; }
+.estado-failed, .estado-timeout { background: #4a2424; }
+.gate-badge { padding: 1px 7px; border-radius: 8px; font-weight: 700; }
+.gate-badge.ok { background: #1d4d2e; color: #7fe0a0; }
+.gate-badge.falhou { background: #5a2222; color: #ff9c9c; }

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SWARM cursors</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header id="topo">
+  <strong>SWARM cursors</strong>
+  <span id="run-id"></span>
+  <span id="base-sha"></span>
+  <span id="conexao" class="badge">conectando…</span>
+</header>
+<div id="layout">
+  <aside id="lateral">
+    <h2>arquivos</h2>
+    <ul id="arvore"></ul>
+  </aside>
+  <main id="editor">
+    <div id="arquivo-barra">
+      <span id="arquivo-path">nenhum arquivo aberto</span>
+      <span id="dono"></span>
+      <span id="pensando" class="badge oculto">pensando…</span>
+    </div>
+    <div id="viewer-wrap">
+      <pre id="viewer"></pre>
+      <div id="cursor" class="oculto"><span id="cursor-nome"></span></div>
+    </div>
+    <div id="marcador" class="oculto"></div>
+  </main>
+</div>
+<footer id="faixa"></footer>
+<script type="module" src="/app.js"></script>
+</body>
+</html>
