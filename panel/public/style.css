@@ -51,6 +51,7 @@ body {
 #cursor-nome {
   position: absolute; top: -16px; left: -2px; padding: 0 5px;
   color: #10131a; font: 700 10px/1.5 "Segoe UI", sans-serif; border-radius: 3px 3px 3px 0;
+  white-space: nowrap;
   animation: none;
 }
 @keyframes pisca { 50% { opacity: 0.35; } }
